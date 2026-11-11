@@ -632,11 +632,28 @@ def commit_verdict(conn, verdict: Verdict) -> str:
     return ""
 
 
+def recheck_transition(conn, verdict: Verdict) -> str:
+    """Re-run the legality check against the application's status as it is
+    right now, including events committed earlier in this same batch.
+
+    validate_proposal() checks every proposal in a batch against the state
+    before the batch. Two proposals for one application can each be legal on
+    their own and illegal together ("rejected" then "screen", or two terminal
+    events), so each one is checked again immediately before it is written.
+    """
+    assert verdict.proposal is not None and verdict.application_id is not None
+    app = conn.execute(
+        "SELECT * FROM applications WHERE id = ?", (verdict.application_id,)).fetchone()
+    current = jt.derive(conn, app)["status"]
+    ok, reason = transitions.is_legal(current, verdict.proposal["kind"])
+    return "" if ok else f"{reason} (after an earlier proposal in the same batch)"
+
+
 def apply_verdicts(conn, verdicts: list[Verdict]) -> tuple[int, int]:
     committed = reviewed = 0
     for verdict in verdicts:
         if verdict.ok:
-            reason = commit_verdict(conn, verdict)
+            reason = recheck_transition(conn, verdict) or commit_verdict(conn, verdict)
             if reason:
                 write_review(conn, Verdict(
                     verdict.gmail_msg_id, False, reason, verdict.proposal))
