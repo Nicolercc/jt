@@ -59,7 +59,7 @@ from pathlib import Path
 
 from transitions import is_legal
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # --------------------------------------------------------------------------
 # Domain vocabulary. You own this. Changing it is a schema-level decision.
@@ -188,6 +188,12 @@ CREATE TABLE IF NOT EXISTS raw_messages (
 
 -- Phase 3 writes here: anything the classifier is not sure about.
 -- A GROWING QUEUE IS THE FAILURE SIGNAL. `jt stale` surfaces the count.
+CREATE TABLE IF NOT EXISTS next_actions (
+    application_id INTEGER PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,
+    description TEXT NOT NULL,
+    due_on TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS review_queue (
     id            INTEGER PRIMARY KEY,
     gmail_msg_id  TEXT,
@@ -776,6 +782,64 @@ def cmd_stale(conn, a):
     print()
 
 
+def cmd_draft_followup(conn, a):
+    app = conn.execute("SELECT * FROM applications WHERE id = ?", (a.id,)).fetchone()
+    if app is None:
+        sys.exit(f"error: no application #{a.id}")
+    state = derive(conn, app)
+    if state["is_terminal"]:
+        sys.exit("error: this application is closed")
+    if not app["contact_email"]:
+        sys.exit("error: add or verify a recruiter contact before drafting a follow-up")
+    company, role = app["company"], app["role"]
+    print(f"To: {app['contact_email']}")
+    print(f"Subject: Following up on the {role} role at {company}")
+    print(f"\nHi,\n\nI’m following up on the {role} role at {company}. "
+          "I’m still interested and would appreciate any update on next steps.\n\n"
+          "Thanks for your time,\n[Your name]")
+
+
+def cmd_next_action(conn, a):
+    if not conn.execute("SELECT 1 FROM applications WHERE id = ?", (a.id,)).fetchone():
+        sys.exit(f"error: no application #{a.id}")
+    with conn:
+        if a.clear:
+            conn.execute("DELETE FROM next_actions WHERE application_id = ?", (a.id,))
+        else:
+            if not a.description or not a.description.strip() or not a.due:
+                sys.exit("error: provide an action description and --due, or use --clear")
+            conn.execute(
+                """INSERT INTO next_actions VALUES (?, ?, ?)
+                   ON CONFLICT(application_id) DO UPDATE SET
+                     description = excluded.description, due_on = excluded.due_on""",
+                (a.id, a.description.strip(), parse_day(a.due)),
+            )
+
+
+def cmd_today(conn, a):
+    today = date.fromisoformat(parse_day(a.on))
+    entries = []
+    for app in conn.execute(
+        """SELECT a.*, n.description, n.due_on FROM applications a
+           LEFT JOIN next_actions n ON n.application_id = a.id"""
+    ):
+        state = derive(conn, app, today)
+        if state["is_terminal"]:
+            continue
+        action = action_for(state)
+        if app["due_on"] and app["due_on"] <= today.isoformat():
+            entries.append((0, app["due_on"], 0.0, app["id"], app["company"], app["role"], app["description"]))
+        elif action in {"FOLLOW UP", "CLOSE OUT"}:
+            entries.append((1, "", -priority_score(app, state), app["id"], app["company"], app["role"], action))
+    if entries:
+        print(table(["#", "COMPANY", "ROLE", "DUE", "ACTION"],
+                    [[id_, company, role, due or "-", action]
+                     for _, due, _, id_, company, role, action in sorted(entries)]))
+    else:
+        print("No actions due.")
+    print(review_banner(conn))
+
+
 def cmd_priority(conn, a):
     today = date.fromisoformat(a.today) if a.today else None
     if a.explain:
@@ -1111,9 +1175,76 @@ def cmd_candidates(conn, a):
     print(f"\n  {len(rows)} pending candidate(s)\n")
 
 
+def cmd_review_item(conn, a):
+    if a.queue_id is None:
+        sys.exit(f"error: review {a.review_cmd} requires a queue ID")
+    # Acquire the writer lock before reading the decision and application state.
+    with conn:
+        if a.review_cmd != "show":
+            conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM review_queue WHERE id = ?", (a.queue_id,)).fetchone()
+        if row is None:
+            sys.exit(f"error: no review queue item #{a.queue_id}")
+        if a.review_cmd == "show":
+            msg = conn.execute(
+                "SELECT subject, received_on FROM raw_messages WHERE gmail_msg_id = ?",
+                (row["gmail_msg_id"],),
+            ).fetchone()
+            print(f"#{row['id']} {'resolved' if row['resolved'] else 'pending'}: {row['reason']}")
+            if msg:
+                print(f"{msg['received_on'] or '-'}  {msg['subject'] or '-'}")
+            print(row["proposed_json"])
+            return
+        if row["resolved"]:
+            print(f"queue item {a.queue_id} was already resolved")
+            return
+        event_id = None
+        if a.review_cmd == "approve":
+            proposal = json.loads(row["proposed_json"])
+            if not isinstance(proposal, dict) or not a.app_id:
+                sys.exit("error: approval requires a proposal and an explicit --app-id")
+            app = conn.execute("SELECT * FROM applications WHERE id = ?", (a.app_id,)).fetchone()
+            if app is None:
+                sys.exit(f"error: no application #{a.app_id}")
+            kind = proposal.get("kind")
+            if not isinstance(kind, str) or kind == "note" or kind not in EVENT_KINDS:
+                sys.exit("error: invalid proposed event kind")
+            legal, reason = is_legal(derive(conn, app)["status"], kind)
+            if not legal:
+                sys.exit(f"error: {reason}")
+            proposed_day = proposal.get("occurred_on")
+            if not isinstance(proposed_day, str) or not proposed_day:
+                sys.exit("error: proposal has no event date")
+            day = parse_day(proposed_day)
+            if day < app["applied_on"] or day > date.today().isoformat():
+                sys.exit("error: proposed event date is outside the application timeline")
+            raw = conn.execute("SELECT body FROM raw_messages WHERE gmail_msg_id = ?",
+                               (row["gmail_msg_id"],)).fetchone()
+            evidence = proposal.get("evidence")
+            if not raw or not isinstance(evidence, str) or not evidence.strip() or evidence not in (raw["body"] or ""):
+                sys.exit("error: proposed evidence must appear in the source email")
+            try:
+                cursor = conn.execute(
+                    """INSERT INTO events (application_id, occurred_on, kind, evidence, gmail_msg_id)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (a.app_id, day, kind, evidence, row["gmail_msg_id"]),
+                )
+            except sqlite3.IntegrityError as exc:
+                sys.exit(f"error: could not approve review item: {exc}")
+            event_id = cursor.lastrowid
+        conn.execute(
+            """UPDATE review_queue SET resolved = 1, resolved_event_id = ?,
+               resolved_note = ?, resolved_at = datetime('now') WHERE id = ?""",
+            (event_id, a.note, a.queue_id),
+        )
+    print(f"resolved queue item {a.queue_id}")
+
+
 def cmd_review(conn, a):
     if getattr(a, "review_cmd", None) == "stale":
         return cmd_review_stale(conn, a)
+    if getattr(a, "review_cmd", None) in {"show", "approve", "dismiss"}:
+        return cmd_review_item(conn, a)
     rows = conn.execute(
         "SELECT * FROM review_queue WHERE resolved = 0 ORDER BY id").fetchall()
     if not rows:
@@ -1122,8 +1253,7 @@ def cmd_review(conn, a):
     print()
     for r in rows:
         print(f"  [{r['id']}] {r['reason']}\n      {r['proposed_json']}")
-    print(f"\n  {len(rows)} pending. Resolve with: jt log <app_id> <kind>, "
-          f"then jt resolve <queue_id>\n")
+    print(f"\n  {len(rows)} pending. Inspect with jt review show <id>.\n")
 
 
 def cmd_review_stale(conn, a):
@@ -1270,8 +1400,27 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--note")
     c.set_defaults(fn=cmd_candidates)
 
+    s = sub.add_parser("next-action", help="set or clear an application deadline")
+    s.add_argument("id", type=int)
+    s.add_argument("description", nargs="?")
+    action_mode = s.add_mutually_exclusive_group(required=True)
+    action_mode.add_argument("--due")
+    action_mode.add_argument("--clear", action="store_true")
+    s.set_defaults(fn=cmd_next_action)
+
+    s = sub.add_parser("draft-followup", help="print a local follow-up draft")
+    s.add_argument("id", type=int)
+    s.set_defaults(fn=cmd_draft_followup)
+
+    s = sub.add_parser("today", help="show due actions, follow-ups and review counts")
+    s.add_argument("--on")
+    s.set_defaults(fn=cmd_today)
+
     s = sub.add_parser("review", help="pending classifier proposals (Phase 3)")
-    s.add_argument("review_cmd", nargs="?", choices=["stale"])
+    s.add_argument("review_cmd", nargs="?", choices=["stale", "show", "approve", "dismiss"])
+    s.add_argument("queue_id", nargs="?", type=int)
+    s.add_argument("--app-id", type=int)
+    s.add_argument("--note")
     s.add_argument("--queue-threshold", type=int, default=None)
     s.add_argument("--age-days", type=int, default=None)
     s.add_argument("--failure-threshold", type=int, default=None)
