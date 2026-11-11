@@ -539,7 +539,9 @@ def test_resolve_can_link_to_event(conn):
     assert row["resolved_note"] == "handled"
 
 
-def test_review_stale_alerts_on_queue_size_and_oldest_age(conn, tmp_path, capsys):
+def test_review_stale_alerts_on_queue_size_and_oldest_age(conn, tmp_path, capsys, monkeypatch):
+    # The CLI path reads the real clock; pin it so ages are fixed.
+    monkeypatch.setattr(jt, "_utcnow", lambda: datetime(2026, 8, 5, 12, 0, 0))
     conn.execute(
         """INSERT INTO review_queue (gmail_msg_id, proposed_json, reason, created_at)
            VALUES ('m1', '{}', 'needs human', '2026-08-01 00:00:00')"""
@@ -772,3 +774,53 @@ def test_migration_is_atomic_across_a_simulated_mid_run_crash(tmp_path, monkeypa
             conn.execute("DELETE FROM events")
     finally:
         conn.close()
+
+
+# --- Replay -----------------------------------------------------------------
+# Status is never stored; it is derived from the event log on every read.
+# Replaying the same log, in the same append order, into an empty database
+# must therefore reproduce exactly the same state for every application.
+
+def _snapshot(c, today):
+    out = {}
+    for app in c.execute("SELECT * FROM applications ORDER BY id"):
+        d = jt.derive(c, app, today)
+        out[app["id"]] = {k: d[k] for k in ("status", "is_terminal", "stage_rank",
+                                              "last_touch", "followups", "had_response")}
+    return out
+
+
+def test_replaying_the_event_log_into_an_empty_db_reproduces_state(conn, tmp_path, monkeypatch):
+    a1 = add_app(conn, "Acme", "Engineer", applied_on="2026-08-03")["id"]
+    a2 = add_app(conn, "Beta", "Analyst", applied_on="2026-08-04")["id"]
+    a3 = add_app(conn, "Gamma", "Writer", applied_on="2026-08-05")["id"]
+    log = [
+        (a1, "2026-08-06", "confirmed"), (a1, "2026-08-10", "screen"),
+        (a1, "2026-08-12", "followup_sent"), (a1, "2026-08-20", "tech"),
+        (a2, "2026-08-09", "rejected"),
+        # A later correction dated EARLIER than the mistake: append order wins.
+        (a2, "2026-08-07", "withdrawn"),
+        (a3, "2026-08-15", "response"), (a3, "2026-08-11", "screen"),
+    ]
+    for app_id, on, kind in log:
+        conn.execute("INSERT INTO events (application_id, occurred_on, kind) VALUES (?,?,?)",
+                     (app_id, on, kind))
+    conn.commit()
+    today = date(2026, 9, 1)
+    before = _snapshot(conn, today)
+    assert before[a2]["status"] == "withdrawn"
+
+    monkeypatch.setenv("JT_DB", str(tmp_path / "replay.db"))
+    replay = jt.connect()
+    for app in conn.execute("SELECT * FROM applications ORDER BY id"):
+        replay.execute(
+            "INSERT INTO applications (id, company, role, lane, applied_on) VALUES (?,?,?,?,?)",
+            (app["id"], app["company"], app["role"], app["lane"], app["applied_on"]))
+    for e in conn.execute("SELECT * FROM events ORDER BY id"):
+        replay.execute(
+            "INSERT INTO events (application_id, occurred_on, kind) VALUES (?,?,?)",
+            (e["application_id"], e["occurred_on"], e["kind"]))
+    replay.commit()
+
+    assert _snapshot(replay, today) == before
+    replay.close()

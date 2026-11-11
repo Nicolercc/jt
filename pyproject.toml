@@ -20,7 +20,7 @@ classify = [
   "anthropic>=0.40",
   "rapidfuzz>=3.9",
 ]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "mypy>=1.10"]
 
 [project.scripts]
 jt = "jt:main"
@@ -38,3 +38,11 @@ evals = ["fixtures.example.jsonl"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["jt.py", "transitions.py", "sync.py", "classify.py", "jt_eval.py", "evals"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+check_untyped_defs = true

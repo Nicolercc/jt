@@ -1,11 +1,13 @@
 # jt — job application tracker
 
+[![ci](https://github.com/Nicolercc/jt/actions/workflows/ci.yml/badge.svg)](https://github.com/Nicolercc/jt/actions/workflows/ci.yml)
+
 A local-first CLI for tracking job applications, built around an append-only
 event log and a hard boundary between what an LLM may *propose* and what may be
 *committed*.
 
-Roughly 1,500 lines of Python. No server, no web UI, no hosted anything. The
-database is one SQLite file on your laptop.
+About 2,800 lines of Python (excluding tests). No server, no web UI, no
+hosted anything. The database is one SQLite file on your laptop.
 
 ---
 
@@ -36,7 +38,7 @@ gmail sync   ──►  raw messages  ──►  proposed events
 ## Install
 
 ```bash
-git clone https://github.com/Nicolercc/log-agent.git && cd log-agent
+git clone https://github.com/Nicolercc/jt.git && cd jt
 pipx install -e .           # or: alias jt="python3 $PWD/jt.py"
 jt where                    # confirms the database path
 ```
@@ -52,8 +54,8 @@ pipx install -e ".[gmail,classify]"    # jt-sync + jt-classify
 From GitHub:
 
 ```bash
-pipx install "jt-tracker @ git+https://github.com/Nicolercc/log-agent@v0.3.1"
-pipx install "jt-tracker[gmail,classify] @ git+https://github.com/Nicolercc/log-agent@v0.3.1"
+pipx install "jt-tracker @ git+https://github.com/Nicolercc/jt@v0.3.1"
+pipx install "jt-tracker[gmail,classify] @ git+https://github.com/Nicolercc/jt@v0.3.1"
 ```
 
 ## Use
@@ -112,7 +114,10 @@ jt review
 
 The classifier output is JSON, but it is not trusted. Python validates field
 types, evidence spans, company/role matching, confidence, dates, and legal
-state transitions before inserting an event. Anything ambiguous lands in
+state transitions before inserting an event. The transition check runs twice:
+once per proposal, and again against the live state immediately before each
+insert, so two proposals in one batch can't combine into something illegal
+(for example "rejected" followed by "screen"). Anything ambiguous lands in
 `review_queue` and the raw message is marked processed so it cannot loop
 forever.
 
@@ -194,12 +199,10 @@ The checked-in redacted example can exercise the harness without credentials:
 jt-eval evals/fixtures.example.jsonl --use-expected
 ```
 
-Then you can state:
-
-> 94% precision, 81% recall, and 100% of misclassifications landed in the review
-> queue rather than the database.
-
-That last clause is the entire thesis of the design, expressed as a number.
+It reports precision, recall, and the share of misclassifications that landed
+in the review queue rather than the database. That last number is the entire
+thesis of the design. Results on real mail aren't published here, because the
+labelled fixtures are a private job search.
 
 The failure mode worth watching is **silence, not hallucination**: an email that
 should have produced a rejection, landed in review, and sat there for three
@@ -212,11 +215,14 @@ system is quietly rotting.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest -q
+pip install -e ".[dev]" && python -m mypy && python -m pytest -q
 ```
 
-63 tests. Every staleness assertion passes an explicit `today` — a suite whose
-results change at midnight is a suite you learn to ignore.
+125 tests, run in CI on Python 3.11 and 3.12 alongside mypy. They cover the
+append-only triggers, replaying the event log into an empty database, every
+classifier rejection path (including batch-level legality), sync idempotency
+and the eval harness. Every time-dependent assertion pins the clock: a suite
+whose results change at midnight is a suite you learn to ignore.
 
 ## Live Acceptance
 
@@ -254,8 +260,9 @@ calendar integration, hosted deployment. There is nothing compute-bound here and
 nothing needing a deterministic verification boundary beneath an agent.
 
 **Hard stop rule:** 1,600 lines of Python excluding tests, across the whole
-project. The full end-to-end build is intentionally close to that ceiling. More
-features should replace code, not accrete around it.
+project. More features should replace code, not accrete around it. The project
+is currently about 2,800 lines, so it is over budget: the next change should
+cut code, not add it.
 
 Earlier drafts set the limit at 600, then 1,200. Both were useful warnings and
 bad budgets: Phase 1 alone breached the first, and the real Gmail/classifier
