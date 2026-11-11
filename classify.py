@@ -449,7 +449,9 @@ def _field_types(p: dict[str, Any]) -> str:
     for key, typ in required.items():
         if key not in p:
             return f"missing field {key!r}"
-        if not isinstance(p[key], typ):
+        # bool is a subclass of int in Python, so `true` would otherwise pass
+        # as a confidence of 1.0 and clear any threshold.
+        if not isinstance(p[key], typ) or isinstance(p[key], bool):
             return f"field {key!r} has wrong type"
     return ""
 

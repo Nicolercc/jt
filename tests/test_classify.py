@@ -1071,3 +1071,15 @@ def test_batch_still_commits_a_legal_sequence(conn):
     committed, reviewed = _apply_batch(conn, ["confirmed", "screen"])
     assert (committed, reviewed) == (2, 0)
     assert _event_kinds(conn) == ["confirmed", "screen"]
+
+
+def test_boolean_confidence_is_rejected(conn):
+    # JSON `true` is a Python bool, and bool is an int: without an explicit
+    # check it would pass as confidence 1.0 and clear any threshold.
+    add_app(conn)
+    add_raw(conn, "m1", body="we received your application today and thank you")
+    p = proposal("m1")
+    p["confidence"] = True
+    [verdict] = classify.verdicts_for(conn, classify.load_unprocessed(conn, 10), json.dumps([p]))
+    assert not verdict.ok
+    assert verdict.reason == "field 'confidence' has wrong type"
