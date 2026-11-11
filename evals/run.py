@@ -112,6 +112,7 @@ def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None) -
                 FROM events e JOIN applications a ON a.id = e.application_id
                 WHERE e.gmail_msg_id IS NOT NULL""").fetchall()
             review_reasons = dict(conn.execute("SELECT gmail_msg_id, reason FROM review_queue"))
+            candidates = conn.execute("SELECT COUNT(*) FROM application_candidates").fetchone()[0]
         finally:
             if "conn" in locals():
                 conn.close()
@@ -142,6 +143,8 @@ def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None) -
         "fixtures": len(fixtures),
         "expected_commits": len(expected_commits),
         "actual_commits": len(actual_by_id),
+        "correct_commits": len(true_commits),
+        "application_candidates": candidates,
         "precision": precision,
         "recall": recall,
         "misclassifications_reached_events": len(false_commits),
@@ -160,10 +163,12 @@ def print_report(report: dict) -> None:
     print(f"fixtures: {report['fixtures']}")
     print(f"expected commits: {report['expected_commits']}")
     print(f"actual commits: {report['actual_commits']}")
+    print(f"correct commits: {report['correct_commits']}")
     print(f"precision: {report['precision']:.2%}")
     print(f"recall: {report['recall']:.2%}")
     print(f"missed expected commits: {report['missed_expected_commits']}")
-    print(f"reviewed: {report['reviewed']}")
+    print(f"queued for review: {report['reviewed']}")
+    print(f"application candidates: {report['application_candidates']}")
     for msg_id, expected, actual, reason in report["discrepancies"]:
         print(f"{msg_id}: expected={expected} actual={actual} — {reason}")
     print()

@@ -135,7 +135,8 @@ deadline. It uses a disposable database and requires no credentials.
 Inspect a held email with `jt review show <id>`. Approve it with
 `jt review approve <id> --app-id <application-id>` or record a dismissal
 with `jt review dismiss <id> --note "reason"`. Approval rechecks the current
-application stage and writes the event and decision together.
+application stage and writes the event and decision together. A company
+mismatch requires `--override-company` and an explanation in `--note`.
 
 The draft command prints a local template for editing and sending yourself.
 Classifier evals report actual writes to their disposable database.

@@ -1206,6 +1206,16 @@ def cmd_review_item(conn, a):
             app = conn.execute("SELECT * FROM applications WHERE id = ?", (a.app_id,)).fetchone()
             if app is None:
                 sys.exit(f"error: no application #{a.app_id}")
+            company = proposal.get("company")
+            if isinstance(company, str) and company.strip():
+                proposed = " ".join(company.casefold().split())
+                selected = " ".join(app["company"].casefold().split())
+                if proposed != selected and not (a.override_company and (a.note or "").strip()):
+                    sys.exit(
+                        f"error: proposed company {company!r} differs from selected application "
+                        f"{app['company']!r} ({app['role']}). "
+                        "Use --override-company with --note to record a deliberate correction."
+                    )
             kind = proposal.get("kind")
             if not isinstance(kind, str) or kind == "note" or kind not in EVENT_KINDS:
                 sys.exit("error: invalid proposed event kind")
@@ -1420,6 +1430,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("review_cmd", nargs="?", choices=["stale", "show", "approve", "dismiss"])
     s.add_argument("queue_id", nargs="?", type=int)
     s.add_argument("--app-id", type=int)
+    s.add_argument("--override-company", action="store_true")
     s.add_argument("--note")
     s.add_argument("--queue-threshold", type=int, default=None)
     s.add_argument("--age-days", type=int, default=None)

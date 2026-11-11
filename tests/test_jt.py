@@ -860,3 +860,27 @@ def test_review_approval_rechecks_current_status(conn):
         jt.cmd_review(conn, args)
     assert conn.execute("SELECT resolved FROM review_queue").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+
+
+def test_review_company_mismatch_requires_explained_override(conn):
+    import json
+
+    app = add_app(conn, company="Company B")
+    proposal = {"company": "Company A", "kind": "screen",
+                "occurred_on": "2026-08-05", "evidence": "schedule a call"}
+    with conn:
+        conn.execute("INSERT INTO raw_messages (gmail_msg_id, body) VALUES ('test', 'schedule a call')")
+        conn.execute(
+            "INSERT INTO review_queue (gmail_msg_id, proposed_json, reason) VALUES ('test', ?, 'ambiguous')",
+            (json.dumps(proposal),),
+        )
+    args = ["review", "approve", "1", "--app-id", str(app["id"])]
+    for extra in ([], ["--override-company"]):
+        with pytest.raises(SystemExit, match="differs from selected application"):
+            jt.cmd_review(conn, jt.build_parser().parse_args(args + extra))
+    assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    assert conn.execute("SELECT resolved FROM review_queue").fetchone()[0] == 0
+    jt.cmd_review(conn, jt.build_parser().parse_args(
+        args + ["--override-company", "--note", "Verified company alias"]
+    ))
+    assert conn.execute("SELECT resolved_note FROM review_queue").fetchone()[0] == "Verified company alias"
