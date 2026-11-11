@@ -35,6 +35,40 @@ gmail sync   ──►  raw messages  ──►  proposed events
 
 ---
 
+## What it looks like
+
+Real output from a demo database with four applications (one already rejected):
+
+```console
+$ jt stale
+
+  #  COMPANY  ROLE                STATUS     QUIET  ACTION     CONTACT
+  -  -------  ------------------  ---------  -----  ---------  -------
+  2  Linear   Product Engineer    confirmed  10d    FOLLOW UP  -
+  1  Stripe   Backend Engineer    screen     8d     FOLLOW UP  -
+  4  Ramp     Operations Analyst  applied    7d     FOLLOW UP  -
+
+$ jt log 3 screen
+error: rejected is terminal; refusing to append 'screen' to a closed application
+  pass --force to log it anyway (for a deliberate manual correction)
+$ echo $?
+1
+
+$ jt show 1
+
+  #1  Stripe - Backend Engineer
+  lane swe | applied 2026-10-20 | status screen
+  quiet 8 business days | follow-ups sent 0
+  action   FOLLOW UP
+
+  WHEN        KIND       SOURCE  EVIDENCE
+  ----------  ---------  ------  -------------------
+  2026-10-21  confirmed  manual
+  2026-10-30  screen     manual  30 min w/ recruiter
+```
+
+The middle command is the design in one line. Status is derived from the event log, and every new event, whether you typed it or a model proposed it, goes through the same legality check in [`transitions.py`](transitions.py). The classifier gets no `--force`.
+
 ## Install
 
 ```bash
