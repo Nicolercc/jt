@@ -511,8 +511,13 @@ def _parse_created_at(value: str) -> datetime:
     return datetime.fromisoformat(value.replace(" ", "T"))
 
 
+def _utcnow() -> datetime:
+    """Naive UTC now. One seam so tests can pin the clock."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def _age_days(created_at: str, now: datetime | None = None) -> int:
-    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    now = now or _utcnow()
     created = _parse_created_at(created_at)
     return max(0, (now.date() - created.date()).days)
 
