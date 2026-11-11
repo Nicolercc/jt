@@ -790,15 +790,15 @@ def cmd_priority(conn, a):
         print(f"\n  action: {action_for(d)}\n")
         return
 
-    rows = []
+    ranked: list[tuple[float, sqlite3.Row, dict]] = []
     for app in conn.execute("SELECT * FROM applications ORDER BY applied_on, id"):
         d = derive(conn, app, today)
         if d["is_terminal"]:
             continue
-        rows.append([priority_score(app, d), app, d])
-    rows.sort(key=lambda r: r[0], reverse=True)
+        ranked.append((priority_score(app, d), app, d))
+    ranked.sort(key=lambda r: r[0], reverse=True)
     out = [[app["id"], f"{score:.2f}", app["company"][:26], app["role"][:32],
-            d["status"], action_for(d)] for score, app, d in rows[:10]]
+            d["status"], action_for(d)] for score, app, d in ranked[:10]]
     print()
     print(table(["#", "SCORE", "COMPANY", "ROLE", "STATUS", "ACTION"], out))
     print()
