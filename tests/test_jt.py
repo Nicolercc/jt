@@ -539,7 +539,9 @@ def test_resolve_can_link_to_event(conn):
     assert row["resolved_note"] == "handled"
 
 
-def test_review_stale_alerts_on_queue_size_and_oldest_age(conn, tmp_path, capsys):
+def test_review_stale_alerts_on_queue_size_and_oldest_age(conn, tmp_path, capsys, monkeypatch):
+    # The CLI path reads the real clock; pin it so ages are fixed.
+    monkeypatch.setattr(jt, "_utcnow", lambda: datetime(2026, 8, 5, 12, 0, 0))
     conn.execute(
         """INSERT INTO review_queue (gmail_msg_id, proposed_json, reason, created_at)
            VALUES ('m1', '{}', 'needs human', '2026-08-01 00:00:00')"""
