@@ -411,6 +411,7 @@ def _call_model_result(client, messages: list[sqlite3.Row], sleep=time.sleep) ->
                 ) from e
             sleep(delay)
             delay *= 2
+    raise AssertionError("unreachable: the last attempt either returns or raises")
 
 
 def call_model(client, messages: list[sqlite3.Row], sleep=time.sleep) -> str:
@@ -437,7 +438,7 @@ def _word_count(s: str) -> int:
 
 
 def _field_types(p: dict[str, Any]) -> str:
-    required = {
+    required: dict[str, type | tuple[type, ...]] = {
         "gmail_msg_id": str,
         "company": str,
         "role_hint": str,
@@ -449,7 +450,9 @@ def _field_types(p: dict[str, Any]) -> str:
     for key, typ in required.items():
         if key not in p:
             return f"missing field {key!r}"
-        if not isinstance(p[key], typ):
+        # bool is a subclass of int in Python, so `true` would otherwise pass
+        # as a confidence of 1.0 and clear any threshold.
+        if not isinstance(p[key], typ) or isinstance(p[key], bool):
             return f"field {key!r} has wrong type"
     return ""
 
@@ -503,7 +506,8 @@ def match_application(conn, company: str, role_hint: str) -> tuple[sqlite3.Row |
 
 def validate_proposal(conn, p: dict[str, Any], messages_by_id: dict[str, sqlite3.Row]) -> Verdict:
     type_reason = _field_types(p)
-    msg_id = p.get("gmail_msg_id") if isinstance(p.get("gmail_msg_id"), str) else "unknown"
+    raw_id = p.get("gmail_msg_id")
+    msg_id: str = raw_id if isinstance(raw_id, str) else "unknown"
     if type_reason:
         return Verdict(msg_id, False, type_reason, p)
 
@@ -532,8 +536,8 @@ def validate_proposal(conn, p: dict[str, Any], messages_by_id: dict[str, sqlite3
         return Verdict(p["gmail_msg_id"], False, "evidence is not a verbatim span from body", p)
 
     app, reason = match_application(conn, p["company"], p["role_hint"])
-    if reason:
-        return Verdict(p["gmail_msg_id"], False, reason, p)
+    if reason or app is None:
+        return Verdict(p["gmail_msg_id"], False, reason or "no matching application", p)
     if p["occurred_on"] < app["applied_on"]:
         return Verdict(
             p["gmail_msg_id"], False,
@@ -632,11 +636,28 @@ def commit_verdict(conn, verdict: Verdict) -> str:
     return ""
 
 
+def recheck_transition(conn, verdict: Verdict) -> str:
+    """Re-run the legality check against the application's status as it is
+    right now, including events committed earlier in this same batch.
+
+    validate_proposal() checks every proposal in a batch against the state
+    before the batch. Two proposals for one application can each be legal on
+    their own and illegal together ("rejected" then "screen", or two terminal
+    events), so each one is checked again immediately before it is written.
+    """
+    assert verdict.proposal is not None and verdict.application_id is not None
+    app = conn.execute(
+        "SELECT * FROM applications WHERE id = ?", (verdict.application_id,)).fetchone()
+    current = jt.derive(conn, app)["status"]
+    ok, reason = transitions.is_legal(current, verdict.proposal["kind"])
+    return "" if ok else f"{reason} (after an earlier proposal in the same batch)"
+
+
 def apply_verdicts(conn, verdicts: list[Verdict]) -> tuple[int, int]:
     committed = reviewed = 0
     for verdict in verdicts:
         if verdict.ok:
-            reason = commit_verdict(conn, verdict)
+            reason = recheck_transition(conn, verdict) or commit_verdict(conn, verdict)
             if reason:
                 write_review(conn, Verdict(
                     verdict.gmail_msg_id, False, reason, verdict.proposal))
