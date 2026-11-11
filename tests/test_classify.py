@@ -1028,3 +1028,46 @@ def test_classify_log_rows_carry_a_schema_version(tmp_path, monkeypatch):
     row = json.loads(log_path.read_text(encoding="utf-8"))
     assert row["schema_version"] == classify.CLASSIFY_LOG_SCHEMA_VERSION
     assert isinstance(row["schema_version"], int)
+
+
+# --- Batch legality ---------------------------------------------------------
+# validate_proposal() sees the state before the batch. These pin that each
+# proposal is re-checked against the live state right before it is written,
+# so a batch can never append what transitions.py forbids.
+
+def _apply_batch(conn, kinds):
+    for i, _ in enumerate(kinds, 1):
+        add_raw(conn, f"m{i}", body="we received your application today and thank you")
+    messages = classify.load_unprocessed(conn, 10)
+    raw = json.dumps([proposal(f"m{i}", kind=k) for i, k in enumerate(kinds, 1)])
+    verdicts = classify.verdicts_for(conn, messages, raw)
+    assert all(v.ok for v in verdicts), "each proposal is legal on its own"
+    return classify.apply_verdicts(conn, verdicts)
+
+
+def _event_kinds(conn):
+    return [r["kind"] for r in conn.execute("SELECT kind FROM events ORDER BY id")]
+
+
+def test_batch_cannot_append_a_stage_after_a_terminal_event(conn):
+    add_app(conn)
+    committed, reviewed = _apply_batch(conn, ["rejected", "screen"])
+    assert (committed, reviewed) == (1, 1)
+    assert _event_kinds(conn) == ["rejected"]
+    reason = conn.execute("SELECT reason FROM review_queue").fetchone()["reason"]
+    assert "rejected is terminal" in reason and "same batch" in reason
+
+
+def test_batch_cannot_overwrite_one_terminal_status_with_another(conn):
+    app_id = add_app(conn)
+    _apply_batch(conn, ["rejected", "ghosted"])
+    assert _event_kinds(conn) == ["rejected"]
+    app = conn.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()
+    assert jt.derive(conn, app)["status"] == "rejected"
+
+
+def test_batch_still_commits_a_legal_sequence(conn):
+    add_app(conn)
+    committed, reviewed = _apply_batch(conn, ["confirmed", "screen"])
+    assert (committed, reviewed) == (2, 0)
+    assert _event_kinds(conn) == ["confirmed", "screen"]
