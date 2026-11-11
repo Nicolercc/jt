@@ -411,6 +411,7 @@ def _call_model_result(client, messages: list[sqlite3.Row], sleep=time.sleep) ->
                 ) from e
             sleep(delay)
             delay *= 2
+    raise AssertionError("unreachable: the last attempt either returns or raises")
 
 
 def call_model(client, messages: list[sqlite3.Row], sleep=time.sleep) -> str:
@@ -437,7 +438,7 @@ def _word_count(s: str) -> int:
 
 
 def _field_types(p: dict[str, Any]) -> str:
-    required = {
+    required: dict[str, type | tuple[type, ...]] = {
         "gmail_msg_id": str,
         "company": str,
         "role_hint": str,
@@ -505,7 +506,8 @@ def match_application(conn, company: str, role_hint: str) -> tuple[sqlite3.Row |
 
 def validate_proposal(conn, p: dict[str, Any], messages_by_id: dict[str, sqlite3.Row]) -> Verdict:
     type_reason = _field_types(p)
-    msg_id = p.get("gmail_msg_id") if isinstance(p.get("gmail_msg_id"), str) else "unknown"
+    raw_id = p.get("gmail_msg_id")
+    msg_id: str = raw_id if isinstance(raw_id, str) else "unknown"
     if type_reason:
         return Verdict(msg_id, False, type_reason, p)
 
@@ -534,8 +536,8 @@ def validate_proposal(conn, p: dict[str, Any], messages_by_id: dict[str, sqlite3
         return Verdict(p["gmail_msg_id"], False, "evidence is not a verbatim span from body", p)
 
     app, reason = match_application(conn, p["company"], p["role_hint"])
-    if reason:
-        return Verdict(p["gmail_msg_id"], False, reason, p)
+    if reason or app is None:
+        return Verdict(p["gmail_msg_id"], False, reason or "no matching application", p)
     if p["occurred_on"] < app["applied_on"]:
         return Verdict(
             p["gmail_msg_id"], False,

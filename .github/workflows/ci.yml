@@ -17,6 +17,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
+      - run: python -m mypy
       - run: python -m pytest -q
 
     # Deliberately no Gmail or Anthropic integration job. Running those in CI
