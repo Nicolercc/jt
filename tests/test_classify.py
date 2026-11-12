@@ -1097,3 +1097,37 @@ def test_client_options_send_workspace_header(monkeypatch):
     assert classify.client_options() == {
         "default_headers": {"anthropic-workspace-id": "wrkspc_123"}}
 
+
+@pytest.mark.parametrize("evidence, body", [
+    ("Thanks for applying to the Web Developer position",
+     "Thanks for applying to the&nbsp;Web Developer&nbsp;position (ref 1)"),
+    ("We\u2019re confirming your application", "We're confirming your application"),
+    ("We're confirming your application", "We\u2019re confirming your application"),
+    ("We have received your application for Computer Associate",
+     "We have\r\nreceived your application for Computer Associate (Software)"),
+    ("you were not selected \u2014 sorry", "you were not selected - sorry"),
+])
+def test_evidence_matches_across_formatting(evidence, body):
+    assert classify.evidence_in_body(evidence, body)
+
+
+@pytest.mark.parametrize("evidence, body", [
+    ("we are pleased to offer you", "we received your application"),
+    ("received your application we", "we received your application"),
+    ("we received your applications", "we received your application."),
+    ("", "anything"),
+    ("we received your application", None),
+])
+def test_evidence_still_rejects_words_not_in_body(evidence, body):
+    assert not classify.evidence_in_body(evidence, body)
+
+
+def test_entity_encoded_body_commits_rendered_quote(conn):
+    add_app(conn)
+    add_raw(conn, body="Thanks,&nbsp;we\r\nreceived your application&nbsp;today")
+
+    classify.process_batch(conn, FakeClient(json.dumps([proposal()])))
+
+    assert conn.execute("SELECT COUNT(*) FROM review_queue").fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT kind FROM events WHERE gmail_msg_id = 'm1'").fetchone()[0] == "confirmed"
