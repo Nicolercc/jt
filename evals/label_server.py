@@ -15,9 +15,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-KINDS = ["", "confirmed", "response", "screen", "tech", "onsite", "final",
+# "" = not labeled yet (skipped by `evals.dataset build`); "none" = labeled,
+# not a status change.
+KINDS = ["", "none", "confirmed", "response", "screen", "tech", "onsite", "final",
          "offer", "rejected"]
 LABEL_FIELDS = ("kind", "company", "role")
+KIND_LABELS = {"": "— not labeled yet —", "none": "not a status change"}
 
 
 def read_rows(path: Path) -> tuple[list[str], list[dict]]:
@@ -40,7 +43,7 @@ def render(rows: list[dict]) -> str:
     for i, r in enumerate(rows):
         opts = "".join(
             f'<option value="{k}"{" selected" if r.get("kind", "") == k else ""}>'
-            f'{k or "— not a status change —"}</option>' for k in KINDS)
+            f'{KIND_LABELS.get(k, k)}</option>' for k in KINDS)
         e = {k: html.escape(r.get(k, "") or "") for k in r}
         cards.append(f"""
 <section class="card" data-i="{i}">
@@ -79,7 +82,7 @@ select,input{font:inherit;color:var(--ink);background:var(--bg);border:1px solid
 </style></head><body>
 <header><strong>Label {{COUNT}} job emails</strong><span id="status">Saves to your Mac only</span><button id="save">Save</button></header>
 <main>
-<p>Pick what each email really means. Leave Kind on "not a status change" for job alerts, newsletters, talent-community mail, or jobs you didn't apply to. Keep company names spelled the same each time.</p>
+<p>Pick what each email really means. Choose "not a status change" for job alerts, newsletters, talent-community mail, scams, or jobs you didn't apply to. Rows left on "not labeled yet" are skipped. Keep company and role names spelled exactly the same each time.</p>
 {{CARDS}}
 </main>
 <datalist id="companies"></datalist><datalist id="roles"></datalist>
@@ -88,7 +91,7 @@ const cards=[...document.querySelectorAll('.card')];
 function collect(){return cards.map(c=>({kind:c.querySelector('[name=kind]').value,company:c.querySelector('[name=company]').value.trim(),role:c.querySelector('[name=role]').value.trim()}));}
 function refresh(){
   const d=collect(); let n=0;
-  cards.forEach((c,i)=>{const ok=!d[i].kind||(d[i].company&&d[i].role);const touched=d[i].kind||d[i].company;c.classList.toggle('done',!!(touched&&ok));if(touched&&ok)n++;});
+  cards.forEach((c,i)=>{const ok=d[i].kind==='none'||(d[i].company&&d[i].role);const touched=!!d[i].kind;c.classList.toggle('done',!!(touched&&ok));if(touched&&ok)n++;});
   for(const [id,key] of [['companies','company'],['roles','role']]){
     document.getElementById(id).innerHTML=[...new Set(d.map(x=>x[key]).filter(Boolean))].map(v=>`<option value="${v.replace(/"/g,'&quot;')}">`).join('');}
   return n;}

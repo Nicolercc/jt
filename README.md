@@ -257,10 +257,16 @@ this database *without* going through `connect()` reopens the hole. Always use
 ## Measuring the classifier
 
 Hygiene makes a project defensible. Measurement makes it interesting. Label
-thirty emails once, then run:
+real emails locally ([docs/EVAL_LABELING.md](docs/EVAL_LABELING.md)), build
+fixtures, and freeze a stratified dev/holdout split:
 
 ```bash
-jt-eval evals/fixtures.jsonl
+python3 -m evals.dataset export      # append unlabeled mail to the label CSV
+python3 evals/label_server.py        # label at http://127.0.0.1:8765
+python3 -m evals.dataset build       # labeled rows -> evals/fixtures.jsonl
+python3 -m evals.dataset split       # new fixtures -> dev or holdout; old ones never move
+jt-eval --set dev                    # tune against this
+jt-eval --set holdout                # report this; never tune against it
 ```
 
 The checked-in redacted example can exercise the harness without credentials:
@@ -269,8 +275,10 @@ The checked-in redacted example can exercise the harness without credentials:
 jt-eval evals/fixtures.example.jsonl --use-expected
 ```
 
-It reports precision, recall, and the share of misclassifications that landed
-in the review queue rather than the database. That last number is the entire
+It reports precision and recall with 95% Wilson intervals, a per-kind table,
+wrong auto-commits per 100 emails, wrong terminal-state commits (target: zero),
+and the share of misclassifications that landed in the review queue rather than
+the database. That last number is the entire
 thesis of the design. Results on real mail aren't published here, because the
 labelled fixtures are a private job search.
 
