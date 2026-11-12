@@ -50,7 +50,7 @@ Usage:
     jt log 3 screen --on 2026-08-19
     jt show 3
     jt export --lane swe --out pursuit.csv
-    jt backup ~/Dropbox/jobtrack
+    jt backup ~/jobtrack-backups
 """
 
 import argparse
@@ -1266,22 +1266,94 @@ def cmd_export(conn, a):
         _write_csv(conn, csv.writer(sys.stdout), a.lane)
 
 
+CLOUD_DIR_NAMES = {"dropbox", "google drive", "onedrive", "icloud drive", "box", "box sync"}
+CLOUD_PATH_MARKERS = ("library/mobile documents", "library/cloudstorage")
+BACKUP_COUNT_TABLES = ("applications", "events", "actions", "review_queue",
+                       "application_candidates", "raw_messages")
+
+
+def _backup_stamp() -> str:
+    return datetime.now().strftime("%Y-%m-%dT%H%M%S")
+
+
+def _is_cloud_synced(path: Path) -> bool:
+    p = path.expanduser().resolve()
+    lowered = str(p).lower()
+    return (any(part.lower() in CLOUD_DIR_NAMES or part.lower().startswith("onedrive")
+                for part in p.parts)
+            or any(m in lowered for m in CLOUD_PATH_MARKERS))
+
+
 def cmd_backup(conn, a):
     """The likeliest catastrophic failure here is not a race condition. It is
-    `rm -rf ~/.jobtrack`. Put this in cron."""
+    `rm -rf ~/.jobtrack`. Put this in cron. (DESIGN D7)
+
+    The .db snapshot is for recovery and holds everything, including raw
+    email bodies unless --no-bodies. The .csv is an export of the pipeline.
+    Both are written to a temp name and renamed, so a crash never leaves a
+    half-written backup that looks complete."""
     dest = Path(a.dir).expanduser()
+    no_bodies = bool(getattr(a, "no_bodies", False))
+    if _is_cloud_synced(dest) and not no_bodies:
+        print("warning: this backup contains raw email bodies and will sync to the cloud. "
+              "Use a local folder, or pass --no-bodies.", file=sys.stderr)
     dest.mkdir(parents=True, exist_ok=True)
-    stamp = date.today().isoformat()
-    db_copy = dest / f"jobs-{stamp}.db"
-    target = sqlite3.connect(db_copy)
+    stamp = _backup_stamp()
+    db_copy, csv_copy = dest / f"jobs-{stamp}.db", dest / f"jobs-{stamp}.csv"
+    for final in (db_copy, csv_copy):
+        if final.exists():
+            sys.exit(f"error: {final} already exists; refusing to overwrite a backup")
+
+    db_tmp = db_copy.with_name(db_copy.name + ".tmp")
+    db_tmp.unlink(missing_ok=True)
+    target = sqlite3.connect(db_tmp)
     try:
         conn.backup(target)      # consistent snapshot, safe on a live db
+        if no_bodies:
+            target.execute("UPDATE raw_messages SET body = NULL")
+            target.commit()
+            # NULLing leaves the old bytes in free pages; VACUUM rewrites the
+            # file so the bodies are actually gone.
+            target.execute("VACUUM")
     finally:
         target.close()
-    csv_copy = dest / f"jobs-{stamp}.csv"
-    with open(csv_copy, "w", newline="") as f:
+    csv_tmp = csv_copy.with_name(csv_copy.name + ".tmp")
+    with open(csv_tmp, "w", newline="") as f:
         _write_csv(conn, csv.writer(f))
-    print(f"backed up to {db_copy} and {csv_copy}")
+    db_tmp.replace(db_copy)
+    csv_tmp.replace(csv_copy)
+    kind = "without email bodies" if no_bodies else "including raw email bodies"
+    print(f"backed up to {db_copy} ({kind}) and {csv_copy}")
+    print(f"check it with: jt verify-backup {db_copy}")
+
+
+def cmd_verify_backup(conn, a):
+    """Open a backup read-only, run SQLite's integrity check, print what's in it."""
+    path = Path(a.file).expanduser()
+    if not path.exists():
+        sys.exit(f"error: {path} not found")
+    try:
+        b = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+        try:
+            result = b.execute("PRAGMA integrity_check").fetchone()[0]
+            if result != "ok":
+                sys.exit(f"error: integrity check failed: {result}")
+            tables = {r[0] for r in b.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            print(f"{path}: integrity ok")
+            version = (b.execute("SELECT value FROM sync_state WHERE key='schema_version'").fetchone()
+                       if "sync_state" in tables else None)
+            print(f"  schema version   {version[0] if version else 'unknown'}")
+            for t in BACKUP_COUNT_TABLES:
+                if t in tables:
+                    print(f"  {t:<24}{b.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]}")
+            if "raw_messages" in tables:
+                with_body = b.execute(
+                    "SELECT COUNT(*) FROM raw_messages WHERE body IS NOT NULL").fetchone()[0]
+                print(f"  raw emails with bodies: {with_body}")
+        finally:
+            b.close()
+    except sqlite3.DatabaseError as e:
+        sys.exit(f"error: {path} is not a readable jt backup: {e}")
 
 
 def _clean_optional(value: str | None) -> str | None:
@@ -1681,7 +1753,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_export)
 
     s = sub.add_parser("backup", help="snapshot db + csv to a directory")
-    s.add_argument("dir"); s.set_defaults(fn=cmd_backup)
+    s.add_argument("dir")
+    s.add_argument("--no-bodies", action="store_true",
+                   help="blank raw email bodies in the snapshot (safer for cloud folders)")
+    s.set_defaults(fn=cmd_backup)
+
+    s = sub.add_parser("verify-backup", help="integrity-check a backup and show its counts")
+    s.add_argument("file"); s.set_defaults(fn=cmd_verify_backup)
 
     s = sub.add_parser("capture", help="capture a possible application from stdin/text")
     s.add_argument("text", nargs="*")
