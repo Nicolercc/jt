@@ -55,7 +55,7 @@ def seed_db(conn, fixtures: list[dict]) -> None:
         company = expect.get("company")
         if not company:
             continue
-        roles = fx.get("application_roles", ["Backend Engineer"] if expect.get("should_commit") else [])
+        roles = fx.get("application_roles", [expect.get("role", "Backend Engineer")] if expect.get("should_commit") else [])
         for role in roles:
             _insert_app(conn, company, role)
         prior = fx.get("prior_event")
@@ -87,7 +87,7 @@ def expected_response(fixtures: list[dict]) -> str:
         proposals.append({
             "gmail_msg_id": fx["id"],
             "company": expect.get("company") or "",
-            "role_hint": fx.get("role_hint", "Backend Engineer"),
+            "role_hint": fx.get("role_hint", expect.get("role", "Backend Engineer")),
             "kind": kind,
             "occurred_on": "2026-08-02",
             "confidence": 0.99,
