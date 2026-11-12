@@ -695,6 +695,17 @@ def recheck_transition(conn, verdict: Verdict) -> str:
 
 
 def apply_verdicts(conn, verdicts: list[Verdict]) -> tuple[int, int]:
+    """Write a batch's verdicts in ONE locked transaction (DESIGN D6).
+
+    The legality recheck must run inside the writer lock: otherwise a review
+    approval or manual `jt log` can commit a terminal event between the
+    recheck and the insert, and both writes land.
+    """
+    with jt.write_txn(conn):
+        return _apply_verdicts_locked(conn, verdicts)
+
+
+def _apply_verdicts_locked(conn, verdicts: list[Verdict]) -> tuple[int, int]:
     committed = reviewed = 0
     for verdict in verdicts:
         if verdict.ok:
@@ -715,7 +726,6 @@ def apply_verdicts(conn, verdicts: list[Verdict]) -> tuple[int, int]:
             "UPDATE raw_messages SET processed = 1 WHERE gmail_msg_id = ?",
             (verdict.gmail_msg_id,),
         )
-    conn.commit()
     return committed, reviewed
 
 

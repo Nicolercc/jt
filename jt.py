@@ -28,6 +28,12 @@ agent working in this repo must not remove them:
      deleted only while it has zero events (see `jt rm`). Past the first
      event it is history, and history does not get erased.
 
+  6. Every write goes through `write_txn()` (BEGIN IMMEDIATE), and any state
+     a write depends on is read INSIDE that block. Checking legality first and
+     locking later lets two writers both pass the check. The only exemption is
+     idempotent schema setup in `connect()`. Never call a model or the network
+     while holding the lock.
+
 TRAP FOR AGENTS AND FUTURE ME: `INSERT OR REPLACE` is internally a DELETE plus
 an INSERT. SQLite only fires the delete trigger for it when
 `PRAGMA recursive_triggers = ON`, which is OFF by default -- so on a default
@@ -48,6 +54,7 @@ Usage:
 """
 
 import argparse
+import contextlib
 import csv
 import hashlib
 import html
@@ -58,6 +65,7 @@ import sys
 import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterator
 
 from transitions import is_legal
 
@@ -322,10 +330,7 @@ def _migrate_v1_to_v2(conn) -> None:
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='events_legacy'"
     ).fetchone())
 
-    old_isolation = conn.isolation_level
-    conn.isolation_level = None  # manual BEGIN/COMMIT/ROLLBACK below
-    conn.execute("BEGIN IMMEDIATE")
-    try:
+    with write_txn(conn):
         if recovering:
             # An older build's migration died after the rename but before
             # the copy/drop. Discard whatever partial 'events' table it left
@@ -361,12 +366,6 @@ def _migrate_v1_to_v2(conn) -> None:
             )
 
         conn.execute("DROP TABLE events_legacy")
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-    finally:
-        conn.isolation_level = old_isolation
     print("migrated database to schema v2 (append-only enforced)", file=sys.stderr)
 
 
@@ -413,6 +412,39 @@ def connect() -> sqlite3.Connection:
     conn.commit()
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+@contextlib.contextmanager
+def write_txn(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """The one way to write. DESIGN D6.
+
+    `BEGIN IMMEDIATE` takes SQLite's writer lock up front, so every read inside
+    the block (current status, "already resolved?", "still pending?") sees the
+    state the write will actually land on. A plain deferred transaction reads
+    first and locks later, which is how a classifier batch and a review
+    approval could both pass a legality check and both commit.
+
+    Commits on success; rolls back on ANY exception, including the
+    `sys.exit()` that command handlers use for user errors. Never call a
+    model or the network inside this block: the lock blocks every other
+    writer while it is held.
+    """
+    if conn.in_transaction:
+        raise RuntimeError(
+            "write_txn: a transaction is already open on this connection; "
+            "commit or roll it back first (nested writes would escape the lock)")
+    old = conn.isolation_level
+    conn.isolation_level = None
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
+    finally:
+        conn.isolation_level = old
 
 
 def parse_day(s: str | None, today: date | None = None) -> str:
@@ -722,8 +754,8 @@ def _insert_application(conn, a) -> tuple[int, tuple]:
 
 def cmd_add(conn, a):
     try:
-        app_id, fields = _insert_application(conn, a)
-        conn.commit()
+        with write_txn(conn):
+            app_id, fields = _insert_application(conn, a)
         company, role, lane, day = fields[:4]
         print(f"#{app_id}  {company} - {role}  [{lane}]  applied {day}")
     except sqlite3.IntegrityError:
@@ -737,6 +769,8 @@ def cmd_bulk(conn, a):
     """Read 'Company | Role | lane [| url]' from stdin. For a day's batch."""
     day = parse_day(a.on)
     added = skipped = 0
+    # Parse all of stdin first: never hold the writer lock while waiting on input.
+    to_insert: list[argparse.Namespace] = []
     for raw in sys.stdin:
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -756,18 +790,17 @@ def cmd_bulk(conn, a):
             print(f"  skip (bad lane {lane!r}): {line}")
             skipped += 1
             continue
-        try:
-            _insert_application(
-                conn,
-                argparse.Namespace(
-                    company=company, role=role, lane=lane, on=day,
-                    source=None, contact=None, url=url, notes=None,
-                ),
-            )
-            added += 1
-        except sqlite3.IntegrityError:
-            skipped += 1
-    conn.commit()
+        to_insert.append(argparse.Namespace(
+            company=company, role=role, lane=lane, on=day,
+            source=None, contact=None, url=url, notes=None,
+        ))
+    with write_txn(conn):
+        for ns in to_insert:
+            try:
+                _insert_application(conn, ns)
+                added += 1
+            except sqlite3.IntegrityError:
+                skipped += 1
     print(f"added {added}, skipped {skipped}")
 
 
@@ -829,7 +862,7 @@ def cmd_draft_followup(conn, a):
 def cmd_next_action(conn, a):
     if not conn.execute("SELECT 1 FROM applications WHERE id = ?", (a.id,)).fetchone():
         sys.exit(f"error: no application #{a.id}")
-    with conn:
+    with write_txn(conn):
         if a.clear:
             conn.execute("DELETE FROM next_actions WHERE application_id = ?", (a.id,))
         else:
@@ -896,6 +929,13 @@ def cmd_priority(conn, a):
 
 
 def cmd_log(conn, a):
+    with write_txn(conn):
+        app = _log_event_locked(conn, a)
+    d = derive(conn, app)
+    print(f"#{a.id} {app['company']} - {app['role']}  ->  {d['status']}")
+
+
+def _log_event_locked(conn, a):
     app = conn.execute("SELECT * FROM applications WHERE id = ?", (a.id,)).fetchone()
     if not app:
         sys.exit(f"error: no application #{a.id}")
@@ -917,9 +957,7 @@ def cmd_log(conn, a):
         )
     except sqlite3.IntegrityError as e:
         sys.exit(f"error: {e}\n  valid kinds: {', '.join(sorted(EVENT_KINDS))}")
-    conn.commit()
-    d = derive(conn, app)
-    print(f"#{a.id} {app['company']} - {app['role']}  ->  {d['status']}")
+    return app
 
 
 def cmd_show(conn, a):
@@ -944,6 +982,12 @@ def cmd_show(conn, a):
 
 def cmd_rm(conn, a):
     """Deletable only while it has zero events. Past that, it is history."""
+    with write_txn(conn):
+        app = _rm_locked(conn, a)
+    print(f"removed #{a.id} {app['company']} - {app['role']}")
+
+
+def _rm_locked(conn, a):
     app = conn.execute("SELECT * FROM applications WHERE id = ?", (a.id,)).fetchone()
     if not app:
         sys.exit(f"error: no application #{a.id}")
@@ -953,8 +997,7 @@ def cmd_rm(conn, a):
         sys.exit(f"error: #{a.id} has {n} event(s) and cannot be deleted.\n"
                  f"  History is not erasable. Use: jt log {a.id} withdrawn")
     conn.execute("DELETE FROM applications WHERE id = ?", (a.id,))
-    conn.commit()
-    print(f"removed #{a.id} {app['company']} - {app['role']}")
+    return app
 
 
 def _write_csv(conn, writer, lane=None) -> int:
@@ -1042,16 +1085,21 @@ def insert_application_candidate(
     if lane and lane not in LANES:
         sys.exit(f"error: lane must be one of: {', '.join(LANES)}")
 
-    cur = conn.execute(
-        """INSERT OR IGNORE INTO application_candidates
-           (raw_input, source, source_ref, company, role, lane, applied_on,
-            contact_email, url, notes)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (raw_input, source, source_ref, company, role, lane, applied_on,
-        contact_email, url, notes),
-    )
+    def _insert():
+        return conn.execute(
+            """INSERT OR IGNORE INTO application_candidates
+               (raw_input, source, source_ref, company, role, lane, applied_on,
+                contact_email, url, notes)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (raw_input, source, source_ref, company, role, lane, applied_on,
+             contact_email, url, notes),
+        )
+    # commit=False means the caller already holds write_txn (the classifier).
     if commit:
-        conn.commit()
+        with write_txn(conn):
+            cur = _insert()
+    else:
+        cur = _insert()
     if cur.rowcount:
         return cur.lastrowid, True
     existing = None
@@ -1120,16 +1168,11 @@ def cmd_candidate_accept(conn, a):
         return
 
     app_args = _candidate_application_args(candidate, a)
-    company, role, _, day = _application_fields(app_args)[:4]
-    existing = _find_application_by_key(conn, company, role, day)
-    if existing:
-        sys.exit(f"error: matching application already exists as #{existing['id']}")
-
-    conn.commit()
-    old_isolation = conn.isolation_level
-    conn.isolation_level = None
-    conn.execute("BEGIN IMMEDIATE")
-    try:
+    with write_txn(conn):
+        company, role, _, day = _application_fields(app_args)[:4]
+        existing = _find_application_by_key(conn, company, role, day)
+        if existing:
+            sys.exit(f"error: matching application already exists as #{existing['id']}")
         cur = conn.execute(
             """UPDATE application_candidates
                SET status = 'accepted', decided_at = datetime('now')
@@ -1137,7 +1180,6 @@ def cmd_candidate_accept(conn, a):
             (a.candidate_id,),
         )
         if cur.rowcount == 0:
-            conn.execute("COMMIT")
             print(f"candidate #{a.candidate_id} was already decided")
             return
         app_id, fields = _insert_application(conn, app_args)
@@ -1147,12 +1189,6 @@ def cmd_candidate_accept(conn, a):
                WHERE id = ?""",
             (app_id, a.candidate_id),
         )
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-    finally:
-        conn.isolation_level = old_isolation
 
     company, role, lane, day = fields[:4]
     print(f"accepted candidate #{a.candidate_id} as #{app_id}  {company} - {role}  [{lane}]  applied {day}")
@@ -1164,15 +1200,15 @@ def cmd_candidate_reject(conn, a):
     ).fetchone()
     if not candidate:
         sys.exit(f"error: no application candidate #{a.candidate_id}")
-    cur = conn.execute(
-        """UPDATE application_candidates
-           SET status = 'rejected',
-               rejected_note = ?,
-               decided_at = datetime('now')
-           WHERE id = ? AND status = 'pending'""",
-        (a.note, a.candidate_id),
-    )
-    conn.commit()
+    with write_txn(conn):
+        cur = conn.execute(
+            """UPDATE application_candidates
+               SET status = 'rejected',
+                   rejected_note = ?,
+                   decided_at = datetime('now')
+               WHERE id = ? AND status = 'pending'""",
+            (a.note, a.candidate_id),
+        )
     if cur.rowcount == 0:
         print(f"candidate #{a.candidate_id} was already decided")
     else:
@@ -1206,9 +1242,9 @@ def cmd_review_item(conn, a):
     if a.queue_id is None:
         sys.exit(f"error: review {a.review_cmd} requires a queue ID")
     # Acquire the writer lock before reading the decision and application state.
-    with conn:
-        if a.review_cmd != "show":
-            conn.execute("BEGIN IMMEDIATE")
+    # `show` only reads, so it skips the lock.
+    ctx = contextlib.nullcontext(conn) if a.review_cmd == "show" else write_txn(conn)
+    with ctx:
         row = conn.execute("SELECT * FROM review_queue WHERE id = ?", (a.queue_id,)).fetchone()
         if row is None:
             sys.exit(f"error: no review queue item #{a.queue_id}")
@@ -1326,24 +1362,24 @@ def cmd_review_stale(conn, a):
 
 
 def cmd_resolve(conn, a):
-    row = conn.execute(
-        "SELECT * FROM review_queue WHERE id = ?", (a.queue_id,)).fetchone()
-    if not row:
-        sys.exit(f"error: no review queue item #{a.queue_id}")
-    if a.event_id:
-        event = conn.execute("SELECT id FROM events WHERE id = ?", (a.event_id,)).fetchone()
-        if not event:
-            sys.exit(f"error: no event #{a.event_id}")
-    cur = conn.execute(
-        """UPDATE review_queue
-           SET resolved = 1,
-               resolved_event_id = ?,
-               resolved_note = ?,
-               resolved_at = datetime('now')
-           WHERE id = ? AND resolved = 0""",
-        (a.event_id, a.note, a.queue_id),
-    )
-    conn.commit()
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM review_queue WHERE id = ?", (a.queue_id,)).fetchone()
+        if not row:
+            sys.exit(f"error: no review queue item #{a.queue_id}")
+        if a.event_id:
+            event = conn.execute("SELECT id FROM events WHERE id = ?", (a.event_id,)).fetchone()
+            if not event:
+                sys.exit(f"error: no event #{a.event_id}")
+        cur = conn.execute(
+            """UPDATE review_queue
+               SET resolved = 1,
+                   resolved_event_id = ?,
+                   resolved_note = ?,
+                   resolved_at = datetime('now')
+               WHERE id = ? AND resolved = 0""",
+            (a.event_id, a.note, a.queue_id),
+        )
     if cur.rowcount == 0:
         print(f"queue item {a.queue_id} was already resolved")
     else:
