@@ -8,8 +8,9 @@ def test_eval_harness_runs_against_redacted_example():
 
     assert report["fixtures"] == 8
     assert report["misclassifications_reached_events"] == 0
-    assert 0.0 <= report["precision"] <= 1.0
-    assert 0.0 <= report["recall"] <= 1.0
+    assert report["precision"] == 1.0
+    assert report["recall"] == 1.0
+    assert "ambiguous role" in report["review_reasons"]["fx05"]
 
 
 def test_eval_counts_wrong_kind_as_misclassification():

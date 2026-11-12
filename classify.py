@@ -11,6 +11,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -36,6 +37,9 @@ COMPANY_MIN_SCORE = 88.0
 ROLE_MIN_SCORE = 80.0
 RUNNER_UP_GAP = 10.0
 MAX_EVIDENCE_WORDS = 14
+# A verbatim quote up to this long is trimmed to its first MAX_EVIDENCE_WORDS
+# words (still verbatim) instead of rejected; anything longer is not a quote.
+MAX_TRIMMABLE_EVIDENCE_WORDS = 2 * MAX_EVIDENCE_WORDS
 MIN_EVIDENCE_WORDS = 3
 # Overridable so a second machine, a different account, or CI doesn't need
 # this literal home directory to exist. Mirrors jt.py's db_path() pattern.
@@ -324,7 +328,17 @@ def build_classifier_client():
             "  pipx install -e '.[classify]'\n"
             f"missing import: {e.name}"
         ) from e
-    return anthropic.Anthropic()
+    return anthropic.Anthropic(**client_options())
+
+
+def client_options() -> dict[str, Any]:
+    """Extra client settings from the environment.
+
+    ANTHROPIC_WORKSPACE_ID selects the workspace for an API key that is not
+    scoped to one; the API rejects such a key without this header.
+    """
+    workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
+    return {"default_headers": {"anthropic-workspace-id": workspace}} if workspace else {}
 
 
 def _usage_tokens(response: Any) -> tuple[int | None, int | None]:
@@ -433,6 +447,12 @@ def parse_json_array(raw: str) -> tuple[list[dict[str, Any]] | None, str]:
     return data, ""
 
 
+# Shared with `jt review approve`, so a quote the classifier accepted can
+# always be approved by hand.
+_normalize_for_match = jt.normalize_for_match
+evidence_in_body = jt.evidence_in_body
+
+
 def _word_count(s: str) -> int:
     return len([w for w in s.split() if w.strip()])
 
@@ -469,8 +489,26 @@ def _message_map(messages: list[sqlite3.Row]) -> dict[str, sqlite3.Row]:
     return {m["gmail_msg_id"]: m for m in messages}
 
 
+def _title_words(title: str) -> list[str]:
+    return re.findall(r"\w+", _normalize_for_match(title))
+
+
+def _role_score(role_hint: str, role: str) -> float:
+    """Fuzzy role similarity, plus full credit when one title contains the
+    other word-for-word (e.g. an email's long official title vs the short title
+    you saved). The shorter title needs two or more words, so a bare
+    "Engineer" can't claim every engineering role."""
+    score = _ratio(role_hint, role)
+    hint, saved = _title_words(role_hint), _title_words(role)
+    short, long_ = sorted((hint, saved), key=len)
+    if len(short) >= 2 and any(
+            long_[i:i + len(short)] == short for i in range(len(long_) - len(short) + 1)):
+        return 100.0
+    return score
+
+
 def _app_score(app, company: str, role_hint: str) -> tuple[float, float]:
-    return _ratio(company, app["company"]), _ratio(role_hint or "", app["role"])
+    return _ratio(company, app["company"]), _role_score(role_hint or "", app["role"])
 
 
 def match_application(conn, company: str, role_hint: str) -> tuple[sqlite3.Row | None, str]:
@@ -528,12 +566,15 @@ def validate_proposal(conn, p: dict[str, Any], messages_by_id: dict[str, sqlite3
 
     evidence = p["evidence"].strip()
     words = _word_count(evidence)
-    if words > MAX_EVIDENCE_WORDS:
+    if words > MAX_TRIMMABLE_EVIDENCE_WORDS:
         return Verdict(p["gmail_msg_id"], False, "evidence span is too long", p)
     if words < MIN_EVIDENCE_WORDS:
         return Verdict(p["gmail_msg_id"], False, "evidence span is too short to be diagnostic", p)
-    if evidence not in (msg["body"] or ""):
+    if not evidence_in_body(evidence, msg["body"]):
         return Verdict(p["gmail_msg_id"], False, "evidence is not a verbatim span from body", p)
+    if words > MAX_EVIDENCE_WORDS:
+        # The whole quote is verbatim, so its leading words are too.
+        p = {**p, "evidence": " ".join(evidence.split()[:MAX_EVIDENCE_WORDS])}
 
     app, reason = match_application(conn, p["company"], p["role_hint"])
     if reason or app is None:

@@ -253,16 +253,37 @@ def test_watermark_uses_the_run_wide_max_not_the_last_page(conn):
     assert watermark == "2026-08-10"
 
 
-def test_empty_sync_advances_watermark_to_run_day(conn):
-    svc = Service(
-        [{"messages": []}],
-        {},
-    )
+def test_empty_sync_preserves_watermark_for_late_labels(conn):
+    sync.set_watermark(conn, "2026-08-10")
+    conn.commit()
+    assert sync.sync_messages(conn, Service([{"messages": []}], {}),
+                              today=date(2026, 8, 20)) == (0, 0)
+    assert sync.start_day(conn, None, date(2026, 8, 21)) == "2026-08-08"
+    service = Service([{"messages": [{"id": "late"}]}],
+                      {"late": message("late", day="2026-08-09")})
+    assert sync.sync_messages(conn, service, today=date(2026, 8, 21)) == (1, 1)
+    assert sync.start_day(conn, None, date(2026, 8, 21)) == "2026-08-08"
 
-    seen, inserted = sync.sync_messages(
-        conn, svc, since="2026-08-01", today=date(2026, 8, 20))
 
-    assert (seen, inserted) == (0, 0)
-    assert conn.execute(
-        "SELECT value FROM sync_state WHERE key = 'gmail_last_synced'"
-    ).fetchone()[0] == "2026-08-20"
+def test_empty_first_sync_does_not_create_watermark(conn):
+    assert sync.sync_messages(conn, Service([{}], {}),
+                              today=date(2026, 8, 20)) == (0, 0)
+    assert sync._watermark(conn) is None
+
+
+def test_query_defaults_to_label_scope():
+    assert sync.gmail_query("jobsearch", "2026-10-01") == "label:jobsearch after:2026/10/01"
+    assert sync.gmail_query("jobsearch", "2026-10-01", "  ") == "label:jobsearch after:2026/10/01"
+
+
+def test_search_override_replaces_label_and_keeps_date_bound():
+    q = sync.gmail_query("jobsearch", "2026-10-01", "from:lever.co OR subject:applying")
+    assert q == "(from:lever.co OR subject:applying) after:2026/10/01"
+
+
+def test_sync_uses_gmail_query_env(conn, monkeypatch):
+    monkeypatch.setenv("GMAIL_QUERY", "from:greenhouse.io OR from:lever.co")
+    service = Service([{"messages": [{"id": "m1"}]}], {"m1": message("m1")})
+    sync.sync_messages(conn, service, since="2026-08-01", today=date(2026, 8, 20))
+    assert service.messages_obj.queries == [
+        "(from:greenhouse.io OR from:lever.co) after:2026/08/01"]

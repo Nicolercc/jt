@@ -53,13 +53,18 @@ def seed_db(conn, fixtures: list[dict]) -> None:
     for fx in fixtures:
         expect = fx.get("expect") or {}
         company = expect.get("company")
-        if not company or not expect.get("should_commit"):
+        if not company:
             continue
-        if "ambiguous" in (fx.get("note") or "").lower():
-            _insert_app(conn, company, "Software Engineer")
-            _insert_app(conn, company, "Platform Engineer")
-        else:
-            _insert_app(conn, company)
+        roles = fx.get("application_roles", [expect.get("role", "Backend Engineer")] if expect.get("should_commit") else [])
+        for role in roles:
+            _insert_app(conn, company, role)
+        prior = fx.get("prior_event")
+        if prior:
+            conn.execute(
+                """INSERT INTO events (application_id, occurred_on, kind)
+                   SELECT id, '2026-08-01', ? FROM applications WHERE company = ? AND role = ?""",
+                (prior, company, roles[0]),
+            )
     for fx in fixtures:
         conn.execute(
             """INSERT INTO raw_messages
@@ -74,7 +79,7 @@ def expected_response(fixtures: list[dict]) -> str:
     proposals = []
     for fx in fixtures:
         expect = fx.get("expect") or {}
-        kind = expect.get("kind")
+        kind = fx.get("proposal_kind", expect.get("kind"))
         if not kind:
             continue
         body = fx.get("body", "")
@@ -82,23 +87,13 @@ def expected_response(fixtures: list[dict]) -> str:
         proposals.append({
             "gmail_msg_id": fx["id"],
             "company": expect.get("company") or "",
-            "role_hint": "Backend Engineer",
+            "role_hint": fx.get("role_hint", expect.get("role", "Backend Engineer")),
             "kind": kind,
             "occurred_on": "2026-08-02",
             "confidence": 0.99,
             "evidence": evidence,
         })
     return json.dumps(proposals)
-
-
-def _actual_commit(verdict, app_company: dict[int, str]) -> dict | None:
-    if not verdict.ok or not verdict.proposal:
-        return None
-    return {
-        "kind": verdict.proposal.get("kind"),
-        "company": app_company.get(verdict.application_id),
-        "application_id": verdict.application_id,
-    }
 
 
 def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None) -> dict:
@@ -112,10 +107,12 @@ def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None) -
             raw = expected_response(fixtures) if use_expected else classify.call_model(
                 client or classify.build_classifier_client(), messages)
             verdicts = classify.verdicts_for(conn, messages, raw)
-            app_company = {
-                row["id"]: row["company"]
-                for row in conn.execute("SELECT id, company FROM applications")
-            }
+            classify.apply_verdicts(conn, verdicts)
+            actual_rows = conn.execute("""SELECT e.gmail_msg_id, e.kind, a.company, a.role
+                FROM events e JOIN applications a ON a.id = e.application_id
+                WHERE e.gmail_msg_id IS NOT NULL""").fetchall()
+            review_reasons = dict(conn.execute("SELECT gmail_msg_id, reason FROM review_queue"))
+            candidates = conn.execute("SELECT COUNT(*) FROM application_candidates").fetchone()[0]
         finally:
             if "conn" in locals():
                 conn.close()
@@ -125,11 +122,7 @@ def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None) -
                 os.environ["JT_DB"] = old
 
     expected = {fx["id"]: (fx.get("expect") or {}) for fx in fixtures}
-    actual_by_id = {
-        v.gmail_msg_id: actual
-        for v in verdicts
-        if (actual := _actual_commit(v, app_company)) is not None
-    }
+    actual_by_id = {row["gmail_msg_id"]: dict(row) for row in actual_rows}
     expected_commits = {
         msg_id: exp for msg_id, exp in expected.items() if exp.get("should_commit")
     }
@@ -139,6 +132,7 @@ def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None) -
         if msg_id in expected_commits
         and actual["kind"] == expected_commits[msg_id].get("kind")
         and actual["company"] == expected_commits[msg_id].get("company")
+        and actual["role"] == expected_commits[msg_id].get("role", "Backend Engineer")
     }
     false_commits = set(actual_by_id) - true_commits
     missed_commits = set(expected_commits) - true_commits
@@ -149,11 +143,19 @@ def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None) -
         "fixtures": len(fixtures),
         "expected_commits": len(expected_commits),
         "actual_commits": len(actual_by_id),
+        "correct_commits": len(true_commits),
+        "application_candidates": candidates,
         "precision": precision,
         "recall": recall,
         "misclassifications_reached_events": len(false_commits),
         "missed_expected_commits": len(missed_commits),
-        "reviewed": len([v for v in verdicts if not v.ok]),
+        "reviewed": len(review_reasons),
+        "discrepancies": [
+            (msg_id, expected.get(msg_id, {}).get("kind"), actual_by_id.get(msg_id, {}).get("kind"),
+             review_reasons.get(msg_id, "unexpected persisted outcome"))
+            for msg_id in sorted(false_commits | missed_commits)
+        ],
+        "review_reasons": review_reasons,
     }
 
 
@@ -161,10 +163,14 @@ def print_report(report: dict) -> None:
     print(f"fixtures: {report['fixtures']}")
     print(f"expected commits: {report['expected_commits']}")
     print(f"actual commits: {report['actual_commits']}")
+    print(f"correct commits: {report['correct_commits']}")
     print(f"precision: {report['precision']:.2%}")
     print(f"recall: {report['recall']:.2%}")
     print(f"missed expected commits: {report['missed_expected_commits']}")
-    print(f"reviewed: {report['reviewed']}")
+    print(f"queued for review: {report['reviewed']}")
+    print(f"application candidates: {report['application_candidates']}")
+    for msg_id, expected, actual, reason in report["discrepancies"]:
+        print(f"{msg_id}: expected={expected} actual={actual} — {reason}")
     print()
     print(
         "MISCLASSIFICATIONS THAT REACHED EVENTS: "

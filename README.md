@@ -119,6 +119,28 @@ is not a race condition, it is `rm -rf ~/.jobtrack`:
 
 ---
 
+## Try it with synthetic data
+
+From the repository root, run the five-minute walkthrough with Python 3.11+:
+
+```bash
+bash scripts/demo.sh
+python3 -m evals.run evals/fixtures.example.jsonl --use-expected
+```
+
+The walkthrough captures an application, routes a synthetic recruiter email
+to review because two roles match, records your approval, and surfaces a
+deadline. It uses a disposable database and requires no credentials.
+
+Inspect a held email with `jt review show <id>`. Approve it with
+`jt review approve <id> --app-id <application-id>` or record a dismissal
+with `jt review dismiss <id> --note "reason"`. Approval rechecks the current
+application stage and writes the event and decision together. A company
+mismatch requires `--override-company` and an explanation in `--note`.
+
+The draft command prints a local template for editing and sending yourself.
+Classifier evals report actual writes to their disposable database.
+
 ## Gmail Sync
 
 Create a Gmail label named `jobsearch`, place OAuth credentials outside the
@@ -135,12 +157,26 @@ jt-sync
 scope, paginates, retries 429/5xx responses, overlaps the watermark by two
 days, and inserts with `INSERT OR IGNORE`. It does not classify anything.
 
+No label filter? Set `GMAIL_QUERY` to a Gmail search instead, and it replaces
+the label scope (the date bound is still added):
+
+```bash
+export GMAIL_QUERY='from:(greenhouse.io OR lever.co OR ashbyhq.com) OR subject:("thank you for applying")'
+```
+
+A search can match mail a filter would not, so review the dry run first.
+
 ## Classification
+
+Classification sends the selected email subject, sender, date, message ID,
+and up to 2,500 characters of body text to Anthropic. Review the Gmail label
+scope before using it with real mail.
 
 After raw mail lands, classify one batch:
 
 ```bash
 export ANTHROPIC_API_KEY="..."
+export ANTHROPIC_WORKSPACE_ID="..."   # only if the key isn't scoped to a workspace
 jt-classify --dry-run
 jt-classify
 jt review
