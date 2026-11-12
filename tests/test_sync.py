@@ -287,3 +287,66 @@ def test_sync_uses_gmail_query_env(conn, monkeypatch):
     sync.sync_messages(conn, service, since="2026-08-01", today=date(2026, 8, 20))
     assert service.messages_obj.queries == [
         "(from:greenhouse.io OR from:lever.co) after:2026/08/01"]
+
+
+# ---------------------------------------------------------------- retry
+
+class _Resp:
+    def __init__(self, status):
+        self.status = status
+
+
+class _FakeHttpError(Exception):
+    """Shaped like googleapiclient.errors.HttpError: .resp.status and .content."""
+
+    def __init__(self, status, reason):
+        super().__init__(f"{status} {reason}")
+        self.resp = _Resp(status)
+        self.content = json.dumps(
+            {"error": {"code": status, "errors": [{"reason": reason}]}}).encode()
+
+
+class _FlakyRequest:
+    def __init__(self, failures):
+        self.failures = list(failures)
+        self.calls = 0
+
+    def execute(self):
+        self.calls += 1
+        if self.failures:
+            raise self.failures.pop(0)
+        return {"ok": True}
+
+
+@pytest.mark.parametrize("reason", ["rateLimitExceeded", "userRateLimitExceeded"])
+def test_403_rate_limit_is_retried_with_quota_sized_waits(reason):
+    waits = []
+    req = _FlakyRequest([_FakeHttpError(403, reason), _FakeHttpError(403, reason)])
+
+    assert sync.execute_with_retry(req, sleep=waits.append, rand=lambda: 0.0) == {"ok": True}
+    assert req.calls == 3
+    # Gmail's quota is per minute; 1s and 2s backoffs retry into the same window.
+    assert all(w >= sync.RATE_LIMIT_MIN_DELAY for w in waits)
+
+
+def test_403_permission_error_is_not_retried():
+    req = _FlakyRequest([_FakeHttpError(403, "insufficientPermissions")])
+    with pytest.raises(_FakeHttpError):
+        sync.execute_with_retry(req, sleep=lambda s: None, rand=lambda: 0.0)
+    assert req.calls == 1
+
+
+def test_403_with_unreadable_body_is_not_retried():
+    err = _FakeHttpError(403, "x")
+    err.content = b"<html>not json</html>"
+    req = _FlakyRequest([err])
+    with pytest.raises(_FakeHttpError):
+        sync.execute_with_retry(req, sleep=lambda s: None, rand=lambda: 0.0)
+    assert req.calls == 1
+
+
+def test_429_still_retries_and_gives_up_after_max_attempts():
+    req = _FlakyRequest([_FakeHttpError(429, "rateLimitExceeded")] * sync.MAX_ATTEMPTS)
+    with pytest.raises(_FakeHttpError):
+        sync.execute_with_retry(req, sleep=lambda s: None, rand=lambda: 0.0)
+    assert req.calls == sync.MAX_ATTEMPTS

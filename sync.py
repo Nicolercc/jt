@@ -150,6 +150,29 @@ def _status_code(exc: Exception) -> int | None:
     return int(status) if status is not None else None
 
 
+RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+# Gmail reports per-user quota exhaustion as 403, not 429. Other 403s
+# (insufficientPermissions, forbidden) are real failures and must not retry.
+RATE_LIMIT_REASONS = {"rateLimitExceeded", "userRateLimitExceeded"}
+# The quota window is per minute, so 1s/2s backoffs retry into the same
+# exhausted window. Rate-limit retries wait at least this long.
+RATE_LIMIT_MIN_DELAY = 20.0
+
+
+def _error_reasons(exc: Exception) -> set[str]:
+    """Reason codes from a Google API error body. Empty if unreadable."""
+    try:
+        payload = json.loads(getattr(exc, "content", b"") or b"")
+        errors = payload.get("error", {}).get("errors", [])
+        return {e["reason"] for e in errors if isinstance(e, dict) and "reason" in e}
+    except (ValueError, AttributeError, TypeError):
+        return set()
+
+
+def _is_rate_limit(exc: Exception, status: int | None) -> bool:
+    return status == 429 or (status == 403 and bool(_error_reasons(exc) & RATE_LIMIT_REASONS))
+
+
 def execute_with_retry(request, sleep=time.sleep, rand=random.random):
     delay = 1.0
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -157,9 +180,11 @@ def execute_with_retry(request, sleep=time.sleep, rand=random.random):
             return request.execute()
         except Exception as e:
             status = _status_code(e)
-            if status not in {429, 500, 502, 503, 504} or attempt == MAX_ATTEMPTS:
+            rate_limited = _is_rate_limit(e, status)
+            if not (rate_limited or status in RETRYABLE_STATUSES) or attempt == MAX_ATTEMPTS:
                 raise
-            sleep(delay + rand())
+            wait = max(delay, RATE_LIMIT_MIN_DELAY) if rate_limited else delay
+            sleep(wait + rand())
             delay *= 2
 
 
