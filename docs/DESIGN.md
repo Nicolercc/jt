@@ -287,6 +287,8 @@ Agent rules live in `AGENTS.md` (kept untracked unless I decide otherwise): open
 |---|---|
 | 2026-11-12 | Revision 3 drafted. Nicole decided D1 (many actions per job), D2 (times on actions only), D3 (terminal states always reviewed), D7 (backups keep bodies, warn on cloud folders). Then D4 (keep one event per email), D5 (two lists; menu-bar number = due actions only), D6 (`write_txn` on every write path). |
 | 2026-11-12 | M1 tooling built: `evals/dataset.py` (export, build, split), labeling page has an explicit "not a status change" choice, eval prints per-kind table, wrong commits per 100, wrong terminal commits, review rate, and 95% intervals. Split frozen on the existing 23 fixtures (18 dev / 5 holdout). Labeling steps: [EVAL_LABELING.md](EVAL_LABELING.md). |
+| 2026-11-12 | Labeling pool synced (140 emails; 117 waiting for labels). Gmail 403 rate-limit retry fixed (#5). |
+| 2026-11-12 | M2/M4 work that doesn't depend on labels opened as stacked PRs: D6 `write_txn` on every write path, with a race test that fails on the old code (#6); D1+D2 actions table, timed actions, FOLLOW UP suppression (#7); D7 timestamped, atomic, verifiable backups (`jt verify-backup`, not `jt backup verify`, because `backup` takes a positional folder) (#8); D5 `jt today --json` v1 plus JSON results for action and review commands, and freshness timestamps from sync and classify (#9). D3 waits for the M1 baseline so its before/after effect can be measured. `jt today --json` runs in ~50 ms on real data, so a panel can call it directly; no background process needed for now. |
 | | M1 baseline (≥ 150 labeled): _pending_ |
 | | M5 test week results: _pending_ |
 | | M6 decision: _pending_ |
