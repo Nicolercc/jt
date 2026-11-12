@@ -1083,3 +1083,17 @@ def test_boolean_confidence_is_rejected(conn):
     [verdict] = classify.verdicts_for(conn, classify.load_unprocessed(conn, 10), json.dumps([p]))
     assert not verdict.ok
     assert verdict.reason == "field 'confidence' has wrong type"
+
+
+def test_client_options_empty_without_workspace(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_WORKSPACE_ID", raising=False)
+    assert classify.client_options() == {}
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "  ")
+    assert classify.client_options() == {}
+
+
+def test_client_options_send_workspace_header(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", " wrkspc_123 ")
+    assert classify.client_options() == {
+        "default_headers": {"anthropic-workspace-id": "wrkspc_123"}}
+

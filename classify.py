@@ -324,7 +324,17 @@ def build_classifier_client():
             "  pipx install -e '.[classify]'\n"
             f"missing import: {e.name}"
         ) from e
-    return anthropic.Anthropic()
+    return anthropic.Anthropic(**client_options())
+
+
+def client_options() -> dict[str, Any]:
+    """Extra client settings from the environment.
+
+    ANTHROPIC_WORKSPACE_ID selects the workspace for an API key that is not
+    scoped to one; the API rejects such a key without this header.
+    """
+    workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
+    return {"default_headers": {"anthropic-workspace-id": workspace}} if workspace else {}
 
 
 def _usage_tokens(response: Any) -> tuple[int | None, int | None]:

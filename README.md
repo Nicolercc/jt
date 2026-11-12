@@ -176,6 +176,7 @@ After raw mail lands, classify one batch:
 
 ```bash
 export ANTHROPIC_API_KEY="..."
+export ANTHROPIC_WORKSPACE_ID="..."   # only if the key isn't scoped to a workspace
 jt-classify --dry-run
 jt-classify
 jt review
