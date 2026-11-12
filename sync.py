@@ -350,8 +350,10 @@ def sync_messages(conn, service, *, since: str | None = None, dry_run: bool = Fa
             for row in batch:
                 print(f"{row.received_on or '-'}  {row.sender or '-'}  {row.subject or '-'}")
         else:
-            inserted += insert_rows(conn, batch)
-            conn.commit()
+            # Network calls happen above, outside the lock; only the
+            # inserts hold it (DESIGN D6).
+            with jt.write_txn(conn):
+                inserted += insert_rows(conn, batch)
             for row in batch:
                 if row.received_on and (best_received is None or row.received_on > best_received):
                     best_received = row.received_on
@@ -366,9 +368,9 @@ def sync_messages(conn, service, *, since: str | None = None, dry_run: bool = Fa
         # each page's own max. Gmail lists newest-first by default, so a
         # per-page write would let the last (oldest) page silently roll the
         # watermark backward even on a run that completes cleanly.
-        previous = _watermark(conn)
-        set_watermark(conn, max(previous or best_received, best_received))
-        conn.commit()
+        with jt.write_txn(conn):
+            previous = _watermark(conn)
+            set_watermark(conn, max(previous or best_received, best_received))
 
     return seen, inserted
 
