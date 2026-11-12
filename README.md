@@ -110,7 +110,8 @@ jt action snooze 5 --until "2026-08-22 09:00"
 jt today                         # due actions first, then follow-up suggestions
 jt rm 4                          # only works while it has zero events
 jt export --lane swe --out pursuit.csv
-jt backup ~/Dropbox/jobtrack
+jt backup ~/jobtrack-backups      # timestamped; add --no-bodies for cloud folders
+jt verify-backup ~/jobtrack-backups/jobs-2026-08-21T200000.db
 ```
 
 Daily rhythm, ninety seconds: `jt stale` with coffee, `jt bulk` before bed.
@@ -119,7 +120,7 @@ Daily rhythm, ninety seconds: `jt stale` with coffee, `jt bulk` before bed.
 is not a race condition, it is `rm -rf ~/.jobtrack`:
 
 ```cron
-0 20 * * * /usr/local/bin/jt backup ~/Dropbox/jobtrack
+0 20 * * * /usr/local/bin/jt backup ~/jobtrack-backups
 ```
 
 ---
@@ -331,7 +332,7 @@ Suggested local schedule after acceptance:
 
 ```cron
 0 8 * * 1-5 /usr/local/bin/jt-sync && /usr/local/bin/jt-classify
-0 20 * * * /usr/local/bin/jt backup ~/Dropbox/jobtrack
+0 20 * * * /usr/local/bin/jt backup ~/jobtrack-backups
 ```
 
 ---
