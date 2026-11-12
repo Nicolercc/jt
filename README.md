@@ -154,7 +154,7 @@ jt-sync
 ```
 
 `jt-sync` opens the database through `jt.connect()`, uses the read-only Gmail
-scope, paginates, retries 429/5xx responses, overlaps the watermark by two
+scope, paginates, retries 429/5xx and 403 rate-limit responses, overlaps the watermark by two
 days, and inserts with `INSERT OR IGNORE`. It does not classify anything.
 
 No label filter? Set `GMAIL_QUERY` to a Gmail search instead, and it replaces
