@@ -819,8 +819,10 @@ def pending_actions(conn, *, now: datetime, include_snoozed: bool = True,
     """Open actions, plus snoozed ones. With include_snoozed=False, a snoozed
     action counts only once its snooze has run out."""
     tz = now.tzinfo if isinstance(now.tzinfo, ZoneInfo) else viewer_tz()
-    sql = """SELECT x.*, a.company, a.role FROM actions x
+    sql = """SELECT x.*, a.company, a.role, e.gmail_msg_id AS source_gmail_msg_id
+             FROM actions x
              JOIN applications a ON a.id = x.application_id
+             LEFT JOIN events e ON e.id = x.source_event_id
              WHERE x.state IN ('open','snoozed')"""
     params: list = []
     if application_id is not None:
@@ -861,10 +863,118 @@ def today_entries(conn, today: date, now: datetime, tz: ZoneInfo) -> dict:
     for i in open_apps - covered:
         kind = action_for(states[i])
         if kind in {"FOLLOW UP", "CLOSE OUT"}:
-            suggestions.append({"app": apps[i], "kind": kind,
+            suggestions.append({"app": apps[i], "kind": kind, "state": states[i],
                                 "score": priority_score(apps[i], states[i])})
     suggestions.sort(key=lambda x: (-x["score"], x["app"]["id"]))
     return {"actions": actions, "suggestions": suggestions}
+
+
+# --------------------------------------------------------------------------
+# `jt today --json` (DESIGN D5). The only thing a frontend may read.
+# --------------------------------------------------------------------------
+
+TODAY_SCHEMA_VERSION = 1   # bump on any rename, removal, or type change
+
+
+def set_fresh(conn, key: str, when: datetime) -> None:
+    """Record a freshness timestamp. Caller holds write_txn."""
+    conn.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)",
+                 (key, _utc_iso(when)))
+
+
+def mark_fresh(conn, key: str, when: datetime | None = None) -> None:
+    with write_txn(conn):
+        set_fresh(conn, key, when or datetime.now(timezone.utc))
+
+
+def _fresh(conn, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM sync_state WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def _log_dir() -> Path:
+    return Path(os.environ.get("JT_LOG_DIR", str(Path.home() / ".jobtrack" / "logs")))
+
+
+OFFLINE_ERRORS = {"ServerNotFoundError", "ConnectionError", "TimeoutError", "gaierror",
+                  "TransportError", "ConnectionResetError", "ConnectionRefusedError", "OSError"}
+AUTH_MARKERS = ("invalid_grant", "credentials are not valid", "token has been expired",
+                "token_path does not exist", "refresherror")
+
+
+def sync_error_state(log_path: Path | None = None) -> str | None:
+    """None if the last sync succeeded (or none ran), else offline /
+    auth_expired / failed, from the last result in jt-sync.jsonl."""
+    path = log_path or (_log_dir() / "jt-sync.jsonl")
+    if not path.exists():
+        return None
+    last = None
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if e.get("event") in {"success", "failure"}:
+                last = e
+    if not last or last["event"] == "success":
+        return None
+    kind = str(last.get("error_type") or "")
+    text = f"{kind} {last.get('error') or ''}".lower()
+    if any(m in text for m in AUTH_MARKERS):
+        return "auth_expired"
+    if kind in OFFLINE_ERRORS:
+        return "offline"
+    return "failed"
+
+
+def gmail_url(msg_id: str | None) -> str | None:
+    if not msg_id:
+        return None
+    return f"https://mail.google.com/mail/u/{os.environ.get('GMAIL_ACCOUNT_INDEX', '0')}/#all/{msg_id}"
+
+
+def _suggestion_reason(kind: str, d: dict) -> str:
+    if kind == "FOLLOW UP":
+        return f"{d['bdays_quiet']} business days quiet, no follow-up sent"
+    return f"{d['bdays_quiet']} business days quiet after {d['followups']} follow-up(s)"
+
+
+def today_snapshot(conn, today: date, now: datetime, tz: ZoneInfo) -> dict:
+    entries = today_entries(conn, today, now, tz)
+    actions = []
+    for x in entries["actions"]:
+        r = x["row"]
+        due = ({"kind": "time", "value": r["due_at_utc"], "tz": r["due_tz"]} if r["due_at_utc"]
+               else {"kind": "date", "value": r["due_date"]})
+        actions.append({
+            "action_id": r["id"], "application_id": r["application_id"],
+            "company": r["company"], "role": r["role"], "description": r["description"],
+            "due": due, "overdue": x["overdue"], "origin": r["origin"], "reason": r["reason"],
+            "gmail_msg_id": r["source_gmail_msg_id"],
+            "gmail_url": gmail_url(r["source_gmail_msg_id"]),
+        })
+    suggestions = [{
+        "application_id": x["app"]["id"], "company": x["app"]["company"],
+        "role": x["app"]["role"], "kind": x["kind"],
+        "reason": _suggestion_reason(x["kind"], x["state"]),
+    } for x in entries["suggestions"]]
+    now_utc = now.astimezone(timezone.utc).replace(tzinfo=None)
+    stats = review_queue_stats(conn, now_utc)
+    top = conn.execute("""SELECT id, reason FROM review_queue WHERE resolved = 0
+                          ORDER BY created_at, id LIMIT 1""").fetchone()
+    return {
+        "schema_version": TODAY_SCHEMA_VERSION,
+        "generated_at": _utc_iso(now),
+        "badge": {"due": len(actions), "reviews": stats["total"]},
+        "freshness": {"gmail_synced_at": _fresh(conn, "gmail_synced_at"),
+                      "classified_at": _fresh(conn, "classified_at"),
+                      "sync_error": sync_error_state()},
+        "actions": actions,
+        "suggestions": suggestions,
+        "review": {"pending": stats["total"], "oldest_days": stats["oldest_age_days"],
+                   "top": {"review_id": top["id"], "reason": top["reason"]} if top else None},
+    }
 
 
 def table(headers, rows) -> str:
@@ -1076,6 +1186,10 @@ def _parse_when(s: str, tz: ZoneInfo) -> datetime:
     sys.exit(f"error: could not read {s!r}; use YYYY-MM-DD or 'YYYY-MM-DD HH:MM'")
 
 
+def _print_ok(**fields) -> None:
+    print(json.dumps({"ok": True, **fields}))
+
+
 def cmd_action(conn, a):
     tz = viewer_tz()
     if a.action_cmd == "add":
@@ -1092,16 +1206,25 @@ def cmd_action(conn, a):
                 sys.exit("error: --tz only applies with --at")
             action_id = add_action(conn, a.id, a.description, due_date=a.due, reason=a.reason)
         row = conn.execute("SELECT * FROM actions WHERE id = ?", (action_id,)).fetchone()
+        if a.json:
+            return _print_ok(action_id=action_id, state="open")
         print(f"action #{action_id} on #{a.id}: {row['description']} (due {action_due_label(row, tz)})")
     elif a.action_cmd in ("done", "dismiss"):
-        set_action_state(conn, a.action_id, "done" if a.action_cmd == "done" else "dismissed")
-        print(f"action #{a.action_id} {'done' if a.action_cmd == 'done' else 'dismissed'}")
+        state = "done" if a.action_cmd == "done" else "dismissed"
+        set_action_state(conn, a.action_id, state)
+        if a.json:
+            return _print_ok(action_id=a.action_id, state=state)
+        print(f"action #{a.action_id} {state}")
     elif a.action_cmd == "snooze":
         until = _parse_when(a.until, tz)
         set_action_state(conn, a.action_id, "snoozed", snoozed_until=until)
+        if a.json:
+            return _print_ok(action_id=a.action_id, state="snoozed")
         print(f"action #{a.action_id} snoozed until {until.strftime('%Y-%m-%d %H:%M %Z')}")
     elif a.action_cmd == "reopen":
         set_action_state(conn, a.action_id, "open")
+        if a.json:
+            return _print_ok(action_id=a.action_id, state="open")
         print(f"action #{a.action_id} reopened")
     else:  # list
         if a.all:
@@ -1126,7 +1249,11 @@ def cmd_action(conn, a):
 def cmd_today(conn, a):
     tz = viewer_tz()
     today = date.fromisoformat(parse_day(a.on))
-    entries = today_entries(conn, today, _now_for(today, bool(a.on), tz), tz)
+    now = _now_for(today, bool(a.on), tz)
+    if getattr(a, "json", False):
+        print(json.dumps(today_snapshot(conn, today, now, tz), indent=2))
+        return
+    entries = today_entries(conn, today, now, tz)
     rows = []
     for x in entries["actions"]:
         r = x["row"]
@@ -1575,6 +1702,8 @@ def cmd_review_item(conn, a):
             print(row["proposed_json"])
             return
         if row["resolved"]:
+            if getattr(a, "json", False):
+                sys.exit(f"error: queue item {a.queue_id} was already resolved")
             print(f"queue item {a.queue_id} was already resolved")
             return
         event_id = None
@@ -1626,6 +1755,8 @@ def cmd_review_item(conn, a):
                resolved_note = ?, resolved_at = datetime('now') WHERE id = ?""",
             (event_id, a.note, a.queue_id),
         )
+    if getattr(a, "json", False):
+        return _print_ok(review_id=a.queue_id, resolved=True, event_id=event_id)
     print(f"resolved queue item {a.queue_id}")
 
 
@@ -1804,15 +1935,19 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--at", help="HH:MM wall-clock time (makes it a timed action)")
     c.add_argument("--tz", help="IANA zone for --at (default: $JT_TZ or this Mac's zone)")
     c.add_argument("--reason", help="why this exists; shown in the panel later")
+    c.add_argument("--json", action="store_true")
     for name, help_ in (("done", "mark an action done"), ("dismiss", "it no longer applies"),
                         ("reopen", "reopen a snoozed action now")):
         c = act.add_parser(name, help=help_)
         c.add_argument("action_id", type=int)
+        c.add_argument("--json", action="store_true")
     c = act.add_parser("snooze", help="hide an action until a date/time")
     c.add_argument("action_id", type=int)
     c.add_argument("--until", required=True, help="YYYY-MM-DD or 'YYYY-MM-DD HH:MM'")
+    c.add_argument("--json", action="store_true")
     c = act.add_parser("list", help="pending actions (or --all)")
     c.add_argument("--all", action="store_true")
+    c.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     s.set_defaults(fn=cmd_action)
 
     s = sub.add_parser("next-action", help="(older form) add an action, or --clear them")
@@ -1829,6 +1964,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("today", help="show due actions, follow-ups and review counts")
     s.add_argument("--on")
+    s.add_argument("--json", action="store_true",
+                   help="print the versioned read model a frontend consumes (DESIGN D5)")
     s.set_defaults(fn=cmd_today)
 
     s = sub.add_parser("review", help="pending classifier proposals (Phase 3)")
@@ -1842,6 +1979,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--failure-threshold", type=int, default=None)
     s.add_argument("--log")
     s.add_argument("--no-fail", action="store_true")
+    s.add_argument("--json", action="store_true", help="approve/dismiss: print a JSON result")
     s.set_defaults(fn=cmd_review)
 
     s = sub.add_parser("resolve", help="mark a review item handled")
@@ -1855,22 +1993,28 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main_args(argv: list[str] | None = None) -> None:
-    a = build_parser().parse_args(argv)
+def _run(a) -> None:
     conn = connect()
     try:
         a.fn(conn, a)
+    except SystemExit as e:
+        # --json callers (a menu-bar panel) get JSON on failure too, and a
+        # non-zero exit. Text callers keep the plain error message.
+        if getattr(a, "json", False) and e.code not in (None, 0):
+            msg = e.code if isinstance(e.code, str) else f"exit status {e.code}"
+            print(json.dumps({"ok": False, "error": msg.removeprefix("error: ").strip()}))
+            raise SystemExit(1) from None
+        raise
     finally:
         conn.close()
+
+
+def main_args(argv: list[str] | None = None) -> None:
+    _run(build_parser().parse_args(argv))
 
 
 def main():
-    a = build_parser().parse_args()
-    conn = connect()
-    try:
-        a.fn(conn, a)
-    finally:
-        conn.close()
+    _run(build_parser().parse_args())
 
 
 if __name__ == "__main__":
