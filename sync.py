@@ -266,8 +266,18 @@ def oauth_timeout_seconds() -> int | None:
     return seconds if seconds > 0 else None
 
 
-def gmail_query(label: str, since_day: str) -> str:
-    return f"label:{label} after:{since_day.replace('-', '/')}"
+def gmail_query(label: str, since_day: str, search: str | None = None) -> str:
+    """Build the Gmail search for one sync run.
+
+    A non-empty ``search`` (from GMAIL_QUERY) replaces the label scope, for
+    accounts where no filter applies the label. It is parenthesised so its own
+    OR clauses cannot escape the date bound.
+    """
+    after = f"after:{since_day.replace('-', '/')}"
+    search = (search or "").strip()
+    if search:
+        return f"({search}) {after}"
+    return f"label:{label} {after}"
 
 
 def insert_rows(conn, rows: list[RawMessage]) -> int:
@@ -295,7 +305,7 @@ def sync_messages(conn, service, *, since: str | None = None, dry_run: bool = Fa
     label = os.environ.get("GMAIL_LABEL", DEFAULT_LABEL)
     run_day = today or date.today()
     since_day = start_day(conn, since, run_day)
-    query = gmail_query(label, since_day)
+    query = gmail_query(label, since_day, os.environ.get("GMAIL_QUERY"))
     page_token = None
     inserted = seen = 0
     best_received: str | None = None

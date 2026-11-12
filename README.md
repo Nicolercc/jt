@@ -157,6 +157,15 @@ jt-sync
 scope, paginates, retries 429/5xx responses, overlaps the watermark by two
 days, and inserts with `INSERT OR IGNORE`. It does not classify anything.
 
+No label filter? Set `GMAIL_QUERY` to a Gmail search instead, and it replaces
+the label scope (the date bound is still added):
+
+```bash
+export GMAIL_QUERY='from:(greenhouse.io OR lever.co OR ashbyhq.com) OR subject:("thank you for applying")'
+```
+
+A search can match mail a filter would not, so review the dry run first.
+
 ## Classification
 
 Classification sends the selected email subject, sender, date, message ID,

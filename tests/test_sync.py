@@ -269,3 +269,21 @@ def test_empty_first_sync_does_not_create_watermark(conn):
     assert sync.sync_messages(conn, Service([{}], {}),
                               today=date(2026, 8, 20)) == (0, 0)
     assert sync._watermark(conn) is None
+
+
+def test_query_defaults_to_label_scope():
+    assert sync.gmail_query("jobsearch", "2026-10-01") == "label:jobsearch after:2026/10/01"
+    assert sync.gmail_query("jobsearch", "2026-10-01", "  ") == "label:jobsearch after:2026/10/01"
+
+
+def test_search_override_replaces_label_and_keeps_date_bound():
+    q = sync.gmail_query("jobsearch", "2026-10-01", "from:lever.co OR subject:applying")
+    assert q == "(from:lever.co OR subject:applying) after:2026/10/01"
+
+
+def test_sync_uses_gmail_query_env(conn, monkeypatch):
+    monkeypatch.setenv("GMAIL_QUERY", "from:greenhouse.io OR from:lever.co")
+    service = Service([{"messages": [{"id": "m1"}]}], {"m1": message("m1")})
+    sync.sync_messages(conn, service, since="2026-08-01", today=date(2026, 8, 20))
+    assert service.messages_obj.queries == [
+        "(from:greenhouse.io OR from:lever.co) after:2026/08/01"]
