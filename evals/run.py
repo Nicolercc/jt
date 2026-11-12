@@ -21,6 +21,68 @@ if str(ROOT) not in sys.path:
 
 import classify
 import jt
+import transitions
+from evals import dataset
+
+Z95 = 1.96
+
+
+def wilson(k: int, n: int, z: float = Z95) -> tuple[float, float]:
+    """Wilson score 95% interval for k successes in n trials."""
+    if n == 0:
+        return (0.0, 1.0)
+    p = k / n
+    denom = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
+    return (max(0.0, center - half), min(1.0, center + half))
+
+
+def summarize(fixtures: list[dict], actual_by_id: dict[str, dict],
+              review_reasons: dict[str, str]) -> dict:
+    """Score persisted outcomes against labels.
+
+    A commit is correct only if kind, company and role all match. Anything else
+    that reached `events` is a wrong commit, and a wrong commit of a terminal
+    kind is the error DESIGN.md says must be zero.
+    """
+    expected = {fx["id"]: (fx.get("expect") or {}) for fx in fixtures}
+    should = {i for i, e in expected.items() if e.get("should_commit")}
+
+    def correct(i: str) -> bool:
+        a, e = actual_by_id.get(i), expected.get(i, {})
+        if a is None or i not in should:
+            return False
+        return (a["kind"] == e.get("kind") and a["company"] == e.get("company")
+                and a["role"] == e.get("role", "Backend Engineer"))
+
+    true_commits = {i for i in actual_by_id if correct(i)}
+    wrong = set(actual_by_id) - true_commits
+    per_kind: dict[str, dict[str, int]] = {}
+    for i, e in expected.items():
+        k = per_kind.setdefault(e.get("kind") or dataset.NONE_KIND,
+                                {"n": 0, "correct": 0, "wrong": 0, "reviewed": 0, "missed": 0})
+        k["n"] += 1
+        k["correct"] += i in true_commits
+        k["wrong"] += i in wrong
+        k["reviewed"] += i in review_reasons
+        k["missed"] += i in should and i not in true_commits
+
+    n = len(fixtures)
+    return {
+        "n": n,
+        "precision": len(true_commits) / len(actual_by_id) if actual_by_id else 1.0,
+        "recall": len(true_commits) / len(should) if should else 1.0,
+        "precision_ci": wilson(len(true_commits), len(actual_by_id)),
+        "recall_ci": wilson(len(true_commits), len(should)),
+        "wrong_commits": len(wrong),
+        "wrong_commits_per_100": 100 * len(wrong) / n if n else 0.0,
+        "wrong_commits_ci": wilson(len(wrong), n),
+        "wrong_terminal_commits": sum(
+            1 for i in wrong if actual_by_id[i]["kind"] in transitions.TERMINAL_STATES),
+        "review_rate": len(review_reasons) / n if n else 0.0,
+        "per_kind": dict(sorted(per_kind.items())),
+    }
 
 
 def _fixture_lines(path: Path):
@@ -139,7 +201,9 @@ def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None) -
 
     precision = len(true_commits) / len(actual_by_id) if actual_by_id else 1.0
     recall = len(true_commits) / len(expected_commits) if expected_commits else 1.0
+    summary = summarize(fixtures, actual_by_id, review_reasons)
     return {
+        **summary,
         "fixtures": len(fixtures),
         "expected_commits": len(expected_commits),
         "actual_commits": len(actual_by_id),
@@ -159,19 +223,35 @@ def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None) -
     }
 
 
-def print_report(report: dict) -> None:
+def _pct_ci(value: float, ci: tuple[float, float]) -> str:
+    return f"{value:.1%}  (95% CI {ci[0]:.1%}–{ci[1]:.1%})"
+
+
+def print_report(report: dict, label: str = "all") -> None:
+    print(f"set: {label}")
     print(f"fixtures: {report['fixtures']}")
     print(f"expected commits: {report['expected_commits']}")
     print(f"actual commits: {report['actual_commits']}")
     print(f"correct commits: {report['correct_commits']}")
-    print(f"precision: {report['precision']:.2%}")
-    print(f"recall: {report['recall']:.2%}")
+    print(f"precision: {_pct_ci(report['precision'], report['precision_ci'])}")
+    print(f"recall: {_pct_ci(report['recall'], report['recall_ci'])}")
     print(f"missed expected commits: {report['missed_expected_commits']}")
     print(f"queued for review: {report['reviewed']}")
     print(f"application candidates: {report['application_candidates']}")
+    print(f"review rate: {report['review_rate']:.1%}")
+    print()
+    print(f"{'kind':<12}{'n':>5}{'correct':>9}{'wrong':>7}{'review':>8}{'missed':>8}")
+    for kind, k in report["per_kind"].items():
+        print(f"{kind:<12}{k['n']:>5}{k['correct']:>9}{k['wrong']:>7}"
+              f"{k['reviewed']:>8}{k['missed']:>8}")
+    print()
     for msg_id, expected, actual, reason in report["discrepancies"]:
         print(f"{msg_id}: expected={expected} actual={actual} — {reason}")
     print()
+    lo, hi = report["wrong_commits_ci"]
+    print(f"WRONG AUTO-COMMITS PER 100 EMAILS: {report['wrong_commits_per_100']:.1f}"
+          f"  (95% CI {100 * lo:.1f}–{100 * hi:.1f}, n={report['n']})")
+    print(f"WRONG TERMINAL-STATE COMMITS: {report['wrong_terminal_commits']}  (target 0)")
     print(
         "MISCLASSIFICATIONS THAT REACHED EVENTS: "
         f"{report['misclassifications_reached_events']}"
@@ -183,6 +263,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("fixtures", nargs="?", default="evals/fixtures.jsonl")
     p.add_argument("--use-expected", action="store_true",
                    help="test the eval harness without calling the model")
+    p.add_argument("--set", dest="which", choices=("all", "dev", "holdout"), default="all",
+                   help="score only one side of the frozen split (needs --split file)")
+    p.add_argument("--split", type=Path, default=dataset.DEFAULT_SPLIT)
     return p
 
 
@@ -194,7 +277,16 @@ def main() -> None:
             f"error: {path} does not exist. Copy/redact fixtures from "
             "evals/fixtures.example.jsonl first."
         )
-    print_report(run_eval(load_fixtures(path), use_expected=args.use_expected))
+    fixtures = load_fixtures(path)
+    if args.which != "all":
+        try:
+            fixtures = dataset.select_set(fixtures, dataset.load_split(args.split), args.which)
+        except ValueError as e:
+            raise SystemExit(f"error: {e}")
+    if args.which == "holdout":
+        print("HOLDOUT: report these numbers. Do not change prompts or thresholds "
+              "because of them.\n")
+    print_report(run_eval(fixtures, use_expected=args.use_expected), args.which)
 
 
 if __name__ == "__main__":
