@@ -29,7 +29,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import difflib
 import hashlib
+import re
 import json
 import sqlite3
 from collections import defaultdict
@@ -43,7 +45,8 @@ DEFAULT_FIXTURES = ROOT / "evals/fixtures.jsonl"
 DEFAULT_SPLIT = ROOT / "evals/raw/split.json"
 DEFAULT_DB = Path.home() / ".jobtrack" / "jobs.db"
 
-CSV_FIELDS = ["n", "date", "from", "subject", "preview", "kind", "company", "role", "gmail_id"]
+CSV_FIELDS = ["n", "date", "from", "subject", "preview", "kind", "company", "role",
+              "gmail_id", "note"]
 PREVIEW_CHARS = 300
 NONE_KIND = "none"
 HOLDOUT_FRACTION = 0.2
@@ -171,14 +174,18 @@ def build_fixtures(csv_path: Path, db_paths: Iterable[Path]) -> tuple[list[dict]
                 raise ValueError(f"row {n}: kind {kind!r} needs both company and role")
             # Changes in M2 (DESIGN D3): terminal kinds will expect review, not commit.
             expect = {"kind": kind, "company": company, "role": role, "should_commit": True}
-        fixtures.append({
+        fx = {
             "id": fixture_id(n),
             "sender": m["sender"] or "",
             "subject": m["subject"] or "",
             "body": m["body"] or "",
             "expect": expect,
             "note": f"row {n}",
-        })
+        }
+        label_note = (r.get("note") or "").strip()
+        if label_note:
+            fx["label_note"] = label_note
+        fixtures.append(fx)
     return fixtures, skipped
 
 
@@ -188,6 +195,58 @@ def write_fixtures(fixtures: list[dict], out: Path) -> None:
         for fx in fixtures:
             f.write(json.dumps(fx, ensure_ascii=False) + "\n")
     tmp.replace(out)
+
+
+# --------------------------------------------------------------------------
+# Check
+# --------------------------------------------------------------------------
+
+def _norm_name(s: str) -> str:
+    s = re.sub(r"[^\w\s]", " ", s.lower())
+    s = re.sub(r"\b(inc|llc|ltd|corp|corporation|co|the)\b", " ", s)
+    return " ".join(s.split())
+
+
+def _near_duplicates(names: Iterable[str], cutoff: float = 0.85) -> list[tuple[str, str]]:
+    uniq = sorted(set(n for n in names if n))
+    pairs = []
+    for i, a in enumerate(uniq):
+        for b in uniq[i + 1:]:
+            na, nb = _norm_name(a), _norm_name(b)
+            if na == nb or difflib.SequenceMatcher(None, na, nb).ratio() >= cutoff:
+                pairs.append((a, b))
+    return pairs
+
+
+def check_labels(csv_path: Path) -> dict:
+    """Find labeling problems that silently distort the eval."""
+    rows = _read_csv(csv_path)
+    by_kind: dict[str, int] = defaultdict(int)
+    problems: list[str] = []
+    roles_by_company: dict[str, set[str]] = defaultdict(set)
+    for r in rows:
+        kind = (r.get("kind") or "").strip()
+        by_kind[kind or "(not labeled yet)"] += 1
+        if kind and kind != NONE_KIND:
+            company, role = (r.get("company") or "").strip(), (r.get("role") or "").strip()
+            if not company or not role:
+                problems.append(f"row {r['n']}: {kind} needs both company and role")
+            if company:
+                roles_by_company[company].add(role)
+    labeled_companies = list(roles_by_company)
+    company_pairs = _near_duplicates(labeled_companies)
+    role_pairs = [(c, a, b) for c, roles in roles_by_company.items()
+                  for a, b in _near_duplicates(roles)]
+    unsure = [r["n"] for r in rows if "unsure" in (r.get("note") or "").lower()]
+    return {
+        "total": len(rows),
+        "by_kind": dict(sorted(by_kind.items())),
+        "problems": problems,
+        "company_pairs": company_pairs,
+        "role_pairs": role_pairs,
+        "multi_role_companies": {c: sorted(r) for c, r in roles_by_company.items() if len(r) > 1},
+        "unsure_rows": unsure,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -324,6 +383,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--rebuild", action="store_true")
     s.add_argument("--force", action="store_true")
 
+    s = sub.add_parser("check", help="find spelling variants and missing fields")
+    s.add_argument("--csv", type=Path, default=DEFAULT_CSV)
+
     s = sub.add_parser("mark-none", help="one-time: blank kind -> none for rows 1..N")
     s.add_argument("through_n", type=int)
     s.add_argument("--csv", type=Path, default=DEFAULT_CSV)
@@ -353,6 +415,24 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(f"error: {e}")
         print(f"split saved to {a.split} (seed {split['seed']})")
         print(_summary(fixtures, split))
+    elif a.cmd == "check":
+        c = check_labels(a.csv)
+        print(f"{c['total']} rows")
+        for k, v in c["by_kind"].items():
+            print(f"  {k:<20}{v:>5}")
+        sections = [
+            ("Missing company or role (build will refuse these)", c["problems"]),
+            ("Company names that look like the same company spelled differently",
+             [f"{x!r}  vs  {y!r}" for x, y in c["company_pairs"]]),
+            ("Role names at one company that look like the same role spelled differently",
+             [f"{co}: {x!r}  vs  {y!r}" for co, x, y in c["role_pairs"]]),
+            ("Companies with more than one role (fine if real; double-check spelling)",
+             [f"{co}: {', '.join(r)}" for co, r in c["multi_role_companies"].items()]),
+            ("Rows you marked unsure", [", ".join(c["unsure_rows"])] if c["unsure_rows"] else []),
+        ]
+        for title, items in sections:
+            print(f"\n{title}:")
+            print("\n".join(f"  {i}" for i in items) if items else "  none")
     elif a.cmd == "mark-none":
         print(f"marked {mark_blank_as_none(a.csv, a.through_n)} rows as none")
 

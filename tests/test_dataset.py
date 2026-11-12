@@ -203,3 +203,53 @@ def test_select_set_filters_and_rejects_unassigned(tmp_path):
 
     with pytest.raises(ValueError, match="real99"):
         dataset.select_set(fixtures + [fx(99, "confirmed")], split, "dev")
+
+
+# ---------------------------------------------------------------- notes + page
+
+def test_label_note_is_kept_and_export_preserves_it(tmp_path):
+    db = tmp_path / "pool.db"
+    make_db(db, [("g1", "2026-08-11", "a", "s", "b"), ("g2", "2026-08-12", "b", "t", "c")])
+    csv_path = tmp_path / "label-me.csv"
+    r = row(1, "g1", "screen", "Acme", "Engineer")
+    r["note"] = "unsure: could be response"
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=FIELDS + ["note"])
+        w.writeheader()
+        w.writerow(r)
+
+    dataset.export_unlabeled([db], csv_path)
+    assert read_csv(csv_path)[0]["note"] == "unsure: could be response"
+
+    fixtures, _ = dataset.build_fixtures(csv_path, [db])
+    assert fixtures[0]["label_note"] == "unsure: could be response"
+    assert fixtures[0]["note"] == "row 1"
+
+
+def test_label_page_shows_full_body_escaped_and_gmail_link():
+    from evals import label_server
+    rows = [row(1, "g1")]
+    html = label_server.render(rows, {"g1": "Hi <b>Nicole</b>, next steps"})
+    assert "Hi &lt;b&gt;Nicole&lt;/b&gt;, next steps" in html
+    assert "#all/g1" in html
+    assert 'name="note"' in html
+    missing = label_server.render([row(2, "g2")], {})
+    assert "Full email not found" in missing
+
+
+def test_check_flags_spelling_variants_and_missing_fields(tmp_path):
+    csv_path = tmp_path / "label-me.csv"
+    write_csv(csv_path, [
+        row(1, "g1", "confirmed", "Samba TV", "Coordinator"),
+        row(2, "g2", "rejected", "SambaTV", "Coordinator"),
+        row(3, "g3", "screen", "Acme Inc.", "Software Engineer"),
+        row(4, "g4", "tech", "Acme", "Software Engineer I"),
+        row(5, "g5", "offer", "Globex", ""),
+        row(6, "g6", "none"),
+        row(7, "g7"),
+    ])
+    c = dataset.check_labels(csv_path)
+    assert ("Samba TV", "SambaTV") in c["company_pairs"]
+    assert ("Acme", "Acme Inc.") in c["company_pairs"]
+    assert c["problems"] == ["row 5: offer needs both company and role"]
+    assert c["by_kind"]["(not labeled yet)"] == 1
