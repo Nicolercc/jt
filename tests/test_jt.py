@@ -884,3 +884,36 @@ def test_review_company_mismatch_requires_explained_override(conn):
         args + ["--override-company", "--note", "Verified company alias"]
     ))
     assert conn.execute("SELECT resolved_note FROM review_queue").fetchone()[0] == "Verified company alias"
+
+
+def test_review_approval_accepts_quote_across_email_formatting(conn):
+    import json
+
+    app = add_app(conn)
+    proposal = {"kind": "screen", "occurred_on": "2026-08-05",
+                "evidence": "we\u2019d like to schedule a call"}
+    with conn:
+        conn.execute("INSERT INTO raw_messages (gmail_msg_id, body) VALUES "
+                     "('test', 'Hi, we&rsquo;d like to\r\nschedule&nbsp;a call.')")
+        conn.execute(
+            "INSERT INTO review_queue (gmail_msg_id, proposed_json, reason) VALUES ('test', ?, 'ambiguous')",
+            (json.dumps(proposal),),
+        )
+    jt.cmd_review(conn, jt.build_parser().parse_args(["review", "approve", "1", "--app-id", str(app["id"])]))
+    assert conn.execute("SELECT kind FROM events").fetchone()[0] == "screen"
+
+
+def test_review_approval_still_rejects_quote_not_in_email(conn):
+    import json
+
+    app = add_app(conn)
+    proposal = {"kind": "screen", "occurred_on": "2026-08-05", "evidence": "pleased to offer you"}
+    with conn:
+        conn.execute("INSERT INTO raw_messages (gmail_msg_id, body) VALUES ('test', 'schedule&nbsp;a call')")
+        conn.execute(
+            "INSERT INTO review_queue (gmail_msg_id, proposed_json, reason) VALUES ('test', ?, 'ambiguous')",
+            (json.dumps(proposal),),
+        )
+    with pytest.raises(SystemExit, match="must appear in the source email"):
+        jt.cmd_review(conn, jt.build_parser().parse_args(["review", "approve", "1", "--app-id", str(app["id"])]))
+    assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0

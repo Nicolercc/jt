@@ -50,14 +50,41 @@ Usage:
 import argparse
 import csv
 import hashlib
+import html
 import json
 import os
 import sqlite3
 import sys
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from transitions import is_legal
+
+
+_TYPOGRAPHY = str.maketrans({
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
+    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"',
+    "\u2013": "-", "\u2014": "-", "\u2212": "-",
+    "\u200b": None, "\u200c": None, "\u200d": None, "\ufeff": None,
+})
+
+
+def normalize_for_match(text: str) -> str:
+    """Canonical form for the verbatim-evidence check.
+
+    Real ATS mail carries HTML entities (&nbsp;), curly quotes, and hard line
+    wraps mid-sentence, while the model quotes the rendered text. Normalising
+    both sides the same way removes formatting differences only: the words and
+    their order must still appear in the body, so an invented quote still fails.
+    """
+    text = unicodedata.normalize("NFKC", html.unescape(text)).translate(_TYPOGRAPHY)
+    return " ".join(text.split()).casefold()
+
+
+def evidence_in_body(evidence: str, body: str | None) -> bool:
+    needle = normalize_for_match(evidence)
+    return bool(needle) and needle in normalize_for_match(body or "")
 
 SCHEMA_VERSION = 5
 
@@ -1231,7 +1258,7 @@ def cmd_review_item(conn, a):
             raw = conn.execute("SELECT body FROM raw_messages WHERE gmail_msg_id = ?",
                                (row["gmail_msg_id"],)).fetchone()
             evidence = proposal.get("evidence")
-            if not raw or not isinstance(evidence, str) or not evidence.strip() or evidence not in (raw["body"] or ""):
+            if not raw or not isinstance(evidence, str) or not evidence_in_body(evidence, raw["body"]):
                 sys.exit("error: proposed evidence must appear in the source email")
             try:
                 cursor = conn.execute(

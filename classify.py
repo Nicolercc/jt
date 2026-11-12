@@ -9,14 +9,12 @@ and is validated like a form submission from a stranger.
 import argparse
 import contextlib
 import fcntl
-import html
 import json
 import os
 import re
 import sqlite3
 import sys
 import time
-import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
@@ -449,29 +447,10 @@ def parse_json_array(raw: str) -> tuple[list[dict[str, Any]] | None, str]:
     return data, ""
 
 
-_TYPOGRAPHY = str.maketrans({
-    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
-    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"',
-    "\u2013": "-", "\u2014": "-", "\u2212": "-",
-    "\u200b": None, "\u200c": None, "\u200d": None, "\ufeff": None,
-})
-
-
-def _normalize_for_match(text: str) -> str:
-    """Canonical form for the verbatim-evidence check.
-
-    Real ATS mail carries HTML entities (&nbsp;), curly quotes, and hard line
-    wraps mid-sentence, while the model quotes the rendered text. Normalising
-    both sides the same way removes formatting differences only: the words and
-    their order must still appear in the body, so an invented quote still fails.
-    """
-    text = unicodedata.normalize("NFKC", html.unescape(text)).translate(_TYPOGRAPHY)
-    return " ".join(text.split()).casefold()
-
-
-def evidence_in_body(evidence: str, body: str | None) -> bool:
-    needle = _normalize_for_match(evidence)
-    return bool(needle) and needle in _normalize_for_match(body or "")
+# Shared with `jt review approve`, so a quote the classifier accepted can
+# always be approved by hand.
+_normalize_for_match = jt.normalize_for_match
+evidence_in_body = jt.evidence_in_body
 
 
 def _word_count(s: str) -> int:
