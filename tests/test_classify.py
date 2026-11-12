@@ -1131,3 +1131,74 @@ def test_entity_encoded_body_commits_rendered_quote(conn):
     assert conn.execute("SELECT COUNT(*) FROM review_queue").fetchone()[0] == 0
     assert conn.execute(
         "SELECT kind FROM events WHERE gmail_msg_id = 'm1'").fetchone()[0] == "confirmed"
+
+
+LONG_BODY = ("We are currently in the process of accepting applications for this role "
+             "and received your application. If you are selected we will reach out.")
+
+
+def test_long_verbatim_evidence_is_trimmed_not_rejected(conn):
+    add_app(conn)
+    add_raw(conn, body=LONG_BODY)
+    quote = ("We are currently in the process of accepting applications for this role "
+             "and received your application")
+    classify.process_batch(conn, FakeClient(json.dumps([proposal(evidence=quote)])))
+
+    assert conn.execute("SELECT COUNT(*) FROM review_queue").fetchone()[0] == 0
+    stored = conn.execute("SELECT evidence FROM events WHERE gmail_msg_id = 'm1'").fetchone()[0]
+    assert len(stored.split()) == classify.MAX_EVIDENCE_WORDS
+    assert quote.startswith(stored)
+
+
+def test_long_evidence_with_invented_tail_is_still_rejected(conn):
+    add_app(conn)
+    add_raw(conn, body=LONG_BODY)
+    quote = ("We are currently in the process of accepting applications for this role "
+             "and are pleased to offer you the job")
+    classify.process_batch(conn, FakeClient(json.dumps([proposal(evidence=quote)])))
+
+    assert "not a verbatim" in conn.execute("SELECT reason FROM review_queue").fetchone()[0]
+
+
+def test_evidence_beyond_trimmable_length_is_rejected(conn):
+    add_app(conn)
+    body = " ".join(f"word{i}" for i in range(60))
+    add_raw(conn, body=body)
+    quote = " ".join(body.split()[: classify.MAX_TRIMMABLE_EVIDENCE_WORDS + 1])
+    classify.process_batch(conn, FakeClient(json.dumps([proposal(evidence=quote)])))
+
+    assert "too long" in conn.execute("SELECT reason FROM review_queue").fetchone()[0]
+
+
+def test_long_official_title_matches_saved_short_title(conn):
+    add_app(conn, company="City of New York", role="Workplace Operations Coordinator")
+    app_id = add_app(conn, company="City of New York", role="Web Developer")
+    add_raw(conn)
+    p = proposal(company="City of New York", role_hint=(
+        "Workplace Operations Coordinator, Center for Population Health "
+        "Data Science Administration"))
+    classify.process_batch(conn, FakeClient(json.dumps([p])))
+
+    row = conn.execute("SELECT application_id FROM events WHERE gmail_msg_id = 'm1'").fetchone()
+    assert row is not None and row[0] != app_id
+
+
+@pytest.mark.parametrize("hint, role, contained", [
+    ("Workplace Operations Coordinator, Center X", "Workplace Operations Coordinator", True),
+    ("Solutions Engineer", "Associate Solutions Engineer, Healthcare", True),
+    ("Engineer", "Backend Engineer", False),
+    ("Customer Experience Agent", "Customer Experience Associate", False),
+])
+def test_role_containment_requires_two_contiguous_words(hint, role, contained):
+    assert (classify._role_score(hint, role) == 100.0) is contained
+
+
+def test_title_contained_in_two_roles_stays_ambiguous(conn):
+    add_app(conn, company="Company A", role="Solutions Engineer")
+    add_app(conn, company="Company A", role="Senior Solutions Engineer")
+    add_raw(conn)
+    p = proposal(role_hint="Senior Solutions Engineer, Healthcare")
+    classify.process_batch(conn, FakeClient(json.dumps([p])))
+
+    # Both saved titles appear inside the hint, so neither may be guessed.
+    assert "ambiguous role" in conn.execute("SELECT reason FROM review_queue").fetchone()[0]
