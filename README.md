@@ -103,6 +103,11 @@ jt priority                      # top 10 applications by next-action value
 jt priority --explain 3          # why one application scored that way
 jt log 3 screen --on 2026-08-19 --note "30min w/ recruiter"
 jt show 3                        # full audit trail for one application
+jt action add 3 "Send availability" --due tomorrow
+jt action add 3 "Interview" --due 2026-08-21 --at 14:00 --tz America/New_York
+jt action list                   # pending actions; done/snooze/dismiss by ACT id
+jt action snooze 5 --until "2026-08-22 09:00"
+jt today                         # due actions first, then follow-up suggestions
 jt rm 4                          # only works while it has zero events
 jt export --lane swe --out pursuit.csv
 jt backup ~/Dropbox/jobtrack
