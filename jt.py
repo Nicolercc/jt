@@ -63,9 +63,10 @@ import os
 import sqlite3
 import sys
 import unicodedata
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from transitions import is_legal
 
@@ -94,7 +95,7 @@ def evidence_in_body(evidence: str, body: str | None) -> bool:
     needle = normalize_for_match(evidence)
     return bool(needle) and needle in normalize_for_match(body or "")
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # --------------------------------------------------------------------------
 # Domain vocabulary. You own this. Changing it is a schema-level decision.
@@ -221,14 +222,33 @@ CREATE TABLE IF NOT EXISTS raw_messages (
     processed    INTEGER NOT NULL DEFAULT 0
 );
 
+-- Things you committed to do (DESIGN D1/D2). Many per application. Unlike
+-- events, these are mutable to-dos: done, dismissed, snoozed. A timed action
+-- stores UTC plus the IANA zone it was entered in, so "2pm ET" survives DST.
+CREATE TABLE IF NOT EXISTS actions (
+    id              INTEGER PRIMARY KEY,
+    application_id  INTEGER NOT NULL REFERENCES applications(id) ON DELETE RESTRICT,
+    description     TEXT NOT NULL CHECK (length(trim(description)) > 0),
+    due_date        DATE,
+    due_at_utc      TEXT,
+    due_tz          TEXT,
+    state           TEXT NOT NULL DEFAULT 'open'
+                    CHECK (state IN ('open','done','snoozed','dismissed')),
+    snoozed_until   TEXT,
+    reason          TEXT,
+    origin          TEXT NOT NULL DEFAULT 'manual'
+                    CHECK (origin IN ('manual','review','migrated')),
+    source_event_id INTEGER REFERENCES events(id),
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    closed_at       TEXT,
+    CHECK ((due_date IS NULL) != (due_at_utc IS NULL)),
+    CHECK ((due_at_utc IS NULL) = (due_tz IS NULL)),
+    CHECK (state != 'snoozed' OR snoozed_until IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS actions_by_app ON actions (application_id, state);
+
 -- Phase 3 writes here: anything the classifier is not sure about.
 -- A GROWING QUEUE IS THE FAILURE SIGNAL. `jt stale` surfaces the count.
-CREATE TABLE IF NOT EXISTS next_actions (
-    application_id INTEGER PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,
-    description TEXT NOT NULL,
-    due_on TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS review_queue (
     id            INTEGER PRIMARY KEY,
     gmail_msg_id  TEXT,
@@ -410,8 +430,24 @@ def connect() -> sqlite3.Connection:
         (str(SCHEMA_VERSION),),
     )
     conn.commit()
+    _migrate_next_actions(conn)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def _migrate_next_actions(conn) -> None:
+    """Schema v6: one-per-application `next_actions` -> many-per-application
+    `actions`. Each old row becomes an open, all-day action. Runs once."""
+    if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='next_actions'").fetchone():
+        return
+    with write_txn(conn):
+        n = conn.execute("""
+            INSERT INTO actions (application_id, description, due_date, origin)
+            SELECT application_id, description, substr(due_on, 1, 10), 'migrated'
+            FROM next_actions""").rowcount
+        conn.execute("DROP TABLE next_actions")
+    print(f"migrated {n} next action(s) to the actions table (schema v6)", file=sys.stderr)
 
 
 @contextlib.contextmanager
@@ -679,6 +715,158 @@ def review_alerts(conn, *, log_path: Path | None = None, now: datetime | None = 
 # Rendering
 # --------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+# Actions (DESIGN D1/D2)
+# --------------------------------------------------------------------------
+
+ACTION_CLOSED = ("done", "dismissed")
+
+
+def viewer_tz() -> ZoneInfo:
+    """The zone dates are shown in: $JT_TZ, else $TZ, else this Mac's zone."""
+    for name in (os.environ.get("JT_TZ"), os.environ.get("TZ")):
+        if name:
+            return _zone(name)
+    try:
+        link = os.path.realpath("/etc/localtime")
+        if "zoneinfo/" in link:
+            return ZoneInfo(link.split("zoneinfo/", 1)[1])
+    except (OSError, ZoneInfoNotFoundError):
+        pass
+    return ZoneInfo("UTC")
+
+
+def _zone(name: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        sys.exit(f"error: unknown time zone {name!r} (use an IANA name like America/New_York)")
+
+
+def _utc_iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _from_utc_iso(s: str) -> datetime:
+    return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+def action_due_local(row, tz: ZoneInfo) -> datetime | None:
+    """A timed action's due moment in `tz`; None for all-day actions."""
+    return _from_utc_iso(row["due_at_utc"]).astimezone(tz) if row["due_at_utc"] else None
+
+
+def action_due_day(row, tz: ZoneInfo) -> date:
+    local = action_due_local(row, tz)
+    return local.date() if local else date.fromisoformat(row["due_date"])
+
+
+def action_due_label(row, tz: ZoneInfo) -> str:
+    local = action_due_local(row, tz)
+    return local.strftime("%Y-%m-%d %H:%M %Z") if local else row["due_date"]
+
+
+def add_action(conn, application_id: int, description: str, *,
+               due_date: str | None = None, due_local: datetime | None = None,
+               tz: str | None = None, reason: str | None = None,
+               origin: str = "manual", source_event_id: int | None = None) -> int:
+    """Add an action. Exactly one of due_date (all-day) or due_local (a naive
+    wall-clock time in zone `tz`) is required."""
+    if (due_date is None) == (due_local is None):
+        sys.exit("error: give a due date, or a due date with a time")
+    due_at_utc = zone_name = None
+    if due_local is not None:
+        zone_name = tz or viewer_tz().key
+        local = due_local.replace(tzinfo=_zone(zone_name))
+        due_at_utc = _utc_iso(local)
+    elif due_date is not None:
+        due_date = parse_day(due_date)
+    if not description or not description.strip():
+        sys.exit("error: an action needs a description")
+    with write_txn(conn):
+        if not conn.execute("SELECT 1 FROM applications WHERE id = ?", (application_id,)).fetchone():
+            sys.exit(f"error: no application #{application_id}")
+        cur = conn.execute(
+            """INSERT INTO actions (application_id, description, due_date, due_at_utc,
+                                   due_tz, reason, origin, source_event_id)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (application_id, description.strip(), due_date, due_at_utc, zone_name,
+             reason, origin, source_event_id))
+    return int(cur.lastrowid or 0)
+
+
+def set_action_state(conn, action_id: int, state: str, *,
+                     snoozed_until: datetime | None = None) -> None:
+    if state not in ("open", "done", "snoozed", "dismissed"):
+        sys.exit(f"error: unknown action state {state!r}")
+    if state == "snoozed" and snoozed_until is None:
+        sys.exit("error: snoozing needs --until (when should it come back?)")
+    with write_txn(conn):
+        row = conn.execute("SELECT state FROM actions WHERE id = ?", (action_id,)).fetchone()
+        if row is None:
+            sys.exit(f"error: no action #{action_id}")
+        if row["state"] in ACTION_CLOSED:
+            sys.exit(f"error: action #{action_id} is already {row['state']}")
+        conn.execute(
+            """UPDATE actions SET state = ?, snoozed_until = ?,
+                   closed_at = CASE WHEN ? IN ('done','dismissed') THEN datetime('now') END
+               WHERE id = ?""",
+            (state, _utc_iso(snoozed_until) if snoozed_until else None, state, action_id))
+
+
+def pending_actions(conn, *, now: datetime, include_snoozed: bool = True,
+                    application_id: int | None = None) -> list[sqlite3.Row]:
+    """Open actions, plus snoozed ones. With include_snoozed=False, a snoozed
+    action counts only once its snooze has run out."""
+    tz = now.tzinfo if isinstance(now.tzinfo, ZoneInfo) else viewer_tz()
+    sql = """SELECT x.*, a.company, a.role FROM actions x
+             JOIN applications a ON a.id = x.application_id
+             WHERE x.state IN ('open','snoozed')"""
+    params: list = []
+    if application_id is not None:
+        sql += " AND x.application_id = ?"
+        params.append(application_id)
+    rows = conn.execute(sql, params).fetchall()
+    now_utc = _utc_iso(now)
+    keep = [r for r in rows
+            if include_snoozed or r["state"] == "open" or (r["snoozed_until"] or "") <= now_utc]
+    return sorted(keep, key=lambda r: (action_due_day(r, tz),
+                                       action_due_local(r, tz) is not None,
+                                       r["due_at_utc"] or "", r["id"]))
+
+
+def _now_for(day: date, explicit: bool, tz: ZoneInfo) -> datetime:
+    """`--on DAY` means "as of the end of that day"; otherwise right now."""
+    return datetime.combine(day, time(23, 59, 59), tz) if explicit else datetime.now(tz)
+
+
+def today_entries(conn, today: date, now: datetime, tz: ZoneInfo) -> dict:
+    """The read model behind `jt today`: due actions you committed to, and
+    jt's follow-up suggestions for applications with no pending action."""
+    apps = {r["id"]: r for r in conn.execute("SELECT * FROM applications")}
+    states = {i: derive(conn, app, today) for i, app in apps.items()}
+    open_apps = {i for i, d in states.items() if not d["is_terminal"]}
+
+    actions = []
+    for r in pending_actions(conn, now=now, include_snoozed=False):
+        if r["application_id"] not in open_apps:
+            continue
+        day = action_due_day(r, tz)
+        if day <= today:
+            actions.append({"row": r, "due_day": day, "overdue": day < today,
+                            "due_label": action_due_label(r, tz)})
+
+    covered = {r["application_id"] for r in pending_actions(conn, now=now)}
+    suggestions = []
+    for i in open_apps - covered:
+        kind = action_for(states[i])
+        if kind in {"FOLLOW UP", "CLOSE OUT"}:
+            suggestions.append({"app": apps[i], "kind": kind,
+                                "score": priority_score(apps[i], states[i])})
+    suggestions.sort(key=lambda x: (-x["score"], x["app"]["id"]))
+    return {"actions": actions, "suggestions": suggestions}
+
+
 def table(headers, rows) -> str:
     if not rows:
         return "  (nothing)"
@@ -860,41 +1048,95 @@ def cmd_draft_followup(conn, a):
 
 
 def cmd_next_action(conn, a):
-    if not conn.execute("SELECT 1 FROM applications WHERE id = ?", (a.id,)).fetchone():
-        sys.exit(f"error: no application #{a.id}")
-    with write_txn(conn):
-        if a.clear:
-            conn.execute("DELETE FROM next_actions WHERE application_id = ?", (a.id,))
+    """Kept for old scripts: adds an action, or --clear dismisses every
+    pending action on the application."""
+    if a.clear:
+        with write_txn(conn):
+            if not conn.execute("SELECT 1 FROM applications WHERE id = ?", (a.id,)).fetchone():
+                sys.exit(f"error: no application #{a.id}")
+            n = conn.execute(
+                """UPDATE actions SET state = 'dismissed', closed_at = datetime('now')
+                   WHERE application_id = ? AND state IN ('open','snoozed')""", (a.id,)).rowcount
+        print(f"dismissed {n} action(s) on #{a.id}")
+        return
+    if not a.description or not a.description.strip():
+        sys.exit("error: provide an action description and --due, or use --clear")
+    action_id = add_action(conn, a.id, a.description, due_date=a.due)
+    print(f"action #{action_id} on #{a.id}: {a.description.strip()} (due {parse_day(a.due)})")
+
+
+def _parse_when(s: str, tz: ZoneInfo) -> datetime:
+    """'YYYY-MM-DD' (start of that day) or 'YYYY-MM-DD HH:MM' / 'YYYY-MM-DDTHH:MM', in tz."""
+    s = s.strip().replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=tz)
+        except ValueError:
+            continue
+    sys.exit(f"error: could not read {s!r}; use YYYY-MM-DD or 'YYYY-MM-DD HH:MM'")
+
+
+def cmd_action(conn, a):
+    tz = viewer_tz()
+    if a.action_cmd == "add":
+        if a.at:
+            try:
+                hh, mm = (int(x) for x in a.at.split(":"))
+                wall = datetime.combine(date.fromisoformat(parse_day(a.due)), time(hh, mm))
+            except ValueError:
+                sys.exit(f"error: --at must be HH:MM, got {a.at!r}")
+            action_id = add_action(conn, a.id, a.description, due_local=wall,
+                                   tz=a.tz or tz.key, reason=a.reason)
         else:
-            if not a.description or not a.description.strip() or not a.due:
-                sys.exit("error: provide an action description and --due, or use --clear")
-            conn.execute(
-                """INSERT INTO next_actions VALUES (?, ?, ?)
-                   ON CONFLICT(application_id) DO UPDATE SET
-                     description = excluded.description, due_on = excluded.due_on""",
-                (a.id, a.description.strip(), parse_day(a.due)),
-            )
+            if a.tz:
+                sys.exit("error: --tz only applies with --at")
+            action_id = add_action(conn, a.id, a.description, due_date=a.due, reason=a.reason)
+        row = conn.execute("SELECT * FROM actions WHERE id = ?", (action_id,)).fetchone()
+        print(f"action #{action_id} on #{a.id}: {row['description']} (due {action_due_label(row, tz)})")
+    elif a.action_cmd in ("done", "dismiss"):
+        set_action_state(conn, a.action_id, "done" if a.action_cmd == "done" else "dismissed")
+        print(f"action #{a.action_id} {'done' if a.action_cmd == 'done' else 'dismissed'}")
+    elif a.action_cmd == "snooze":
+        until = _parse_when(a.until, tz)
+        set_action_state(conn, a.action_id, "snoozed", snoozed_until=until)
+        print(f"action #{a.action_id} snoozed until {until.strftime('%Y-%m-%d %H:%M %Z')}")
+    elif a.action_cmd == "reopen":
+        set_action_state(conn, a.action_id, "open")
+        print(f"action #{a.action_id} reopened")
+    else:  # list
+        if a.all:
+            rows = conn.execute(
+                """SELECT x.*, a.company, a.role FROM actions x
+                   JOIN applications a ON a.id = x.application_id ORDER BY x.id""").fetchall()
+        else:
+            rows = pending_actions(conn, now=datetime.now(tz))
+        if not rows:
+            print("No pending actions.")
+            return
+        out = []
+        for r in rows:
+            state = r["state"]
+            if state == "snoozed":
+                state += " until " + _from_utc_iso(r["snoozed_until"]).astimezone(tz).strftime("%m-%d %H:%M")
+            out.append([r["id"], r["application_id"], r["company"], r["role"],
+                        action_due_label(r, tz), state, r["description"]])
+        print(table(["ACT", "APP", "COMPANY", "ROLE", "DUE", "STATE", "ACTION"], out))
 
 
 def cmd_today(conn, a):
+    tz = viewer_tz()
     today = date.fromisoformat(parse_day(a.on))
-    entries = []
-    for app in conn.execute(
-        """SELECT a.*, n.description, n.due_on FROM applications a
-           LEFT JOIN next_actions n ON n.application_id = a.id"""
-    ):
-        state = derive(conn, app, today)
-        if state["is_terminal"]:
-            continue
-        action = action_for(state)
-        if app["due_on"] and app["due_on"] <= today.isoformat():
-            entries.append((0, app["due_on"], 0.0, app["id"], app["company"], app["role"], app["description"]))
-        elif action in {"FOLLOW UP", "CLOSE OUT"}:
-            entries.append((1, "", -priority_score(app, state), app["id"], app["company"], app["role"], action))
-    if entries:
-        print(table(["#", "COMPANY", "ROLE", "DUE", "ACTION"],
-                    [[id_, company, role, due or "-", action]
-                     for _, due, _, id_, company, role, action in sorted(entries)]))
+    entries = today_entries(conn, today, _now_for(today, bool(a.on), tz), tz)
+    rows = []
+    for x in entries["actions"]:
+        r = x["row"]
+        what = r["description"] + ("  (overdue)" if x["overdue"] else "")
+        rows.append([r["id"], r["application_id"], r["company"], r["role"], x["due_label"], what])
+    for x in entries["suggestions"]:
+        app = x["app"]
+        rows.append(["-", app["id"], app["company"], app["role"], "-", x["kind"]])
+    if rows:
+        print(table(["ACT", "APP", "COMPANY", "ROLE", "DUE", "ACTION"], rows))
     else:
         print("No actions due.")
     print(review_banner(conn))
@@ -996,6 +1238,8 @@ def _rm_locked(conn, a):
     if n:
         sys.exit(f"error: #{a.id} has {n} event(s) and cannot be deleted.\n"
                  f"  History is not erasable. Use: jt log {a.id} withdrawn")
+    # Actions are to-dos, not history: they go with a mistyped application.
+    conn.execute("DELETE FROM actions WHERE application_id = ?", (a.id,))
     conn.execute("DELETE FROM applications WHERE id = ?", (a.id,))
     return app
 
@@ -1473,7 +1717,27 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--note")
     c.set_defaults(fn=cmd_candidates)
 
-    s = sub.add_parser("next-action", help="set or clear an application deadline")
+    s = sub.add_parser("action", help="add, list, finish, or snooze actions")
+    act = s.add_subparsers(dest="action_cmd", required=True)
+    c = act.add_parser("add", help="add an action to an application")
+    c.add_argument("id", type=int, help="application id")
+    c.add_argument("description")
+    c.add_argument("--due", required=True, help="YYYY-MM-DD, or today/tomorrow")
+    c.add_argument("--at", help="HH:MM wall-clock time (makes it a timed action)")
+    c.add_argument("--tz", help="IANA zone for --at (default: $JT_TZ or this Mac's zone)")
+    c.add_argument("--reason", help="why this exists; shown in the panel later")
+    for name, help_ in (("done", "mark an action done"), ("dismiss", "it no longer applies"),
+                        ("reopen", "reopen a snoozed action now")):
+        c = act.add_parser(name, help=help_)
+        c.add_argument("action_id", type=int)
+    c = act.add_parser("snooze", help="hide an action until a date/time")
+    c.add_argument("action_id", type=int)
+    c.add_argument("--until", required=True, help="YYYY-MM-DD or 'YYYY-MM-DD HH:MM'")
+    c = act.add_parser("list", help="pending actions (or --all)")
+    c.add_argument("--all", action="store_true")
+    s.set_defaults(fn=cmd_action)
+
+    s = sub.add_parser("next-action", help="(older form) add an action, or --clear them")
     s.add_argument("id", type=int)
     s.add_argument("description", nargs="?")
     action_mode = s.add_mutually_exclusive_group(required=True)
@@ -1511,6 +1775,15 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("where", help="print database path")
     s.set_defaults(fn=cmd_where)
     return p
+
+
+def main_args(argv: list[str] | None = None) -> None:
+    a = build_parser().parse_args(argv)
+    conn = connect()
+    try:
+        a.fn(conn, a)
+    finally:
+        conn.close()
 
 
 def main():
