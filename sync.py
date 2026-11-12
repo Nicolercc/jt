@@ -362,15 +362,19 @@ def sync_messages(conn, service, *, since: str | None = None, dry_run: bool = Fa
         if not page_token:
             break
 
-    if not dry_run and best_received is not None:
-        # Advance the watermark only after the full run's pages have all
-        # committed, using the max received_on seen across every page -- not
-        # each page's own max. Gmail lists newest-first by default, so a
-        # per-page write would let the last (oldest) page silently roll the
-        # watermark backward even on a run that completes cleanly.
+    if not dry_run:
         with jt.write_txn(conn):
-            previous = _watermark(conn)
-            set_watermark(conn, max(previous or best_received, best_received))
+            if best_received is not None:
+                # Advance the watermark only after the full run's pages have all
+                # committed, using the max received_on seen across every page -- not
+                # each page's own max. Gmail lists newest-first by default, so a
+                # per-page write would let the last (oldest) page silently roll the
+                # watermark backward even on a run that completes cleanly.
+                previous = _watermark(conn)
+                set_watermark(conn, max(previous or best_received, best_received))
+            # Freshness for `jt today --json` (DESIGN D5): when Gmail last
+            # synced successfully, even if nothing new arrived.
+            jt.set_fresh(conn, "gmail_synced_at", datetime.now(timezone.utc))
 
     return seen, inserted
 

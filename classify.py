@@ -743,6 +743,8 @@ def _malformed_output(verdicts: list[Verdict]) -> bool:
 def run_classification(conn, client, *, dry_run: bool = False) -> ClassificationResult:
     messages = load_unprocessed(conn, _batch_size())
     if not messages:
+        if not dry_run:
+            jt.mark_fresh(conn, "classified_at")
         return ClassificationResult(0, 0, 0)
     model_result = _call_model_result(client, messages)
     raw_response = model_result.text
@@ -760,6 +762,7 @@ def run_classification(conn, client, *, dry_run: bool = False) -> Classification
             malformed_output,
         )
     committed, reviewed = apply_verdicts(conn, verdicts)
+    jt.mark_fresh(conn, "classified_at")
     return ClassificationResult(len(messages), committed, reviewed, model_result.stats, malformed_output)
 
 

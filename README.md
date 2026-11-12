@@ -108,6 +108,7 @@ jt action add 3 "Interview" --due 2026-08-21 --at 14:00 --tz America/New_York
 jt action list                   # pending actions; done/snooze/dismiss by ACT id
 jt action snooze 5 --until "2026-08-22 09:00"
 jt today                         # due actions first, then follow-up suggestions
+jt today --json                  # versioned read model for a menu-bar panel (DESIGN D5)
 jt rm 4                          # only works while it has zero events
 jt export --lane swe --out pursuit.csv
 jt backup ~/jobtrack-backups      # timestamped; add --no-bodies for cloud folders
