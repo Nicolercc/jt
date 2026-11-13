@@ -55,7 +55,7 @@ def check_shape(s):
     assert s["schema_version"] == 1
     assert set(s["freshness"]) == FRESHNESS_KEYS
     assert set(s["badge"]) == {"due", "reviews"}
-    assert set(s["review"]) == {"pending", "oldest_days", "top"}
+    assert set(s["review"]) == {"pending", "oldest_days", "top", "items"}
     for a in s["actions"]:
         assert set(a) == ACTION_KEYS
         assert a["due"]["kind"] in {"date", "time"}
@@ -72,7 +72,7 @@ def test_state_empty(conn):
     assert s["badge"] == {"due": 0, "reviews": 0}
     assert s["actions"] == [] and s["suggestions"] == []
     assert s["freshness"] == {"gmail_synced_at": None, "classified_at": None, "sync_error": None}
-    assert s["review"] == {"pending": 0, "oldest_days": 0, "top": None}
+    assert s["review"] == {"pending": 0, "oldest_days": 0, "top": None, "items": []}
 
 
 def test_state_healthy(conn, tmp_path):

@@ -60,6 +60,7 @@ import hashlib
 import html
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -1054,7 +1055,8 @@ def today_snapshot(conn, today: date, now: datetime, tz: ZoneInfo) -> dict:
         "recorded": recorded,
         "version": {k: v for k, v in version_info().items() if k != "dirty"},
         "review": {"pending": stats["total"], "oldest_days": stats["oldest_age_days"],
-                   "top": {"review_id": top["id"], "reason": top["reason"]} if top else None},
+                   "top": {"review_id": top["id"], "reason": top["reason"]} if top else None,
+                   "items": review_items(conn)},
     }
 
 
@@ -1860,20 +1862,108 @@ def cmd_review_item(conn, a):
     print(f"resolved queue item {a.queue_id}")
 
 
+# --------------------------------------------------------------------------
+# Review in plain English (PRD R9). The panel and `jt review` both use this.
+# --------------------------------------------------------------------------
+
+KIND_PHRASES = {
+    "confirmed": "an application confirmation", "response": "a reply from a person",
+    "screen": "an interview or screen invite", "tech": "an assessment or technical interview",
+    "onsite": "an onsite interview", "final": "a final-round interview", "offer": "an offer",
+    "rejected": "a rejection", "withdrawn": "a withdrawal", "ghosted": "no response (ghosted)",
+    "accepted": "an accepted offer", "request": "a request for you to do something",
+}
+KIND_WORDS = {k: v.split(" ", 1)[1] if v.startswith(("a ", "an ")) else v for k, v in KIND_PHRASES.items()}
+
+
+def _review_summary(reason: str, kind: str | None, company: str | None) -> str:
+    what = f"{KIND_PHRASES.get(kind or '', 'an update')} from {company}" if company else "a job update"
+    if reason.startswith("classifier returned no proposal"):
+        return "No job update found in this email."
+    if reason.startswith("needs your confirmation"):
+        return f"Looks like {what}. Confirm before jt records it."
+    if reason.startswith(("ambiguous role", "ambiguous company")):
+        return f"Which {company} role is this for?" if company else "Which application is this for?"
+    if reason.startswith("no application company match") or reason.startswith("no applications exist"):
+        return f"Looks like {what}, but you have no application at {company or 'that company'}."
+    if reason.startswith("confidence below threshold"):
+        return f"Looks like {what}, but jt isn't sure."
+    if "terminal" in reason or "illegal transition" in reason:
+        return f"Looks like {what}, but it doesn't fit that application's current stage."
+    return f"jt needs your decision: {reason}"
+
+
+def _company_matches(a: str, b: str) -> bool:
+    x, y = (re.sub(r"[^a-z0-9]", "", s.lower()) for s in (a, b))
+    return bool(x and y) and (x == y or x in y or y in x)
+
+
+def review_items(conn, limit: int = 10) -> list[dict]:
+    """Pending review items, each with a plain-English summary and only the
+    choices that `jt review approve` would accept (legal for the application)."""
+    from email.utils import parseaddr
+    rows = conn.execute(
+        """SELECT q.id, q.reason, q.proposed_json, q.gmail_msg_id, m.received_on, m.sender, m.subject
+           FROM review_queue q LEFT JOIN raw_messages m ON m.gmail_msg_id = q.gmail_msg_id
+           WHERE q.resolved = 0 ORDER BY q.created_at, q.id LIMIT ?""", (limit,)).fetchall()
+    apps = conn.execute("SELECT * FROM applications ORDER BY id").fetchall()
+    out = []
+    for r in rows:
+        try:
+            p = json.loads(r["proposed_json"] or "null")
+        except ValueError:
+            p = None
+        p = p if isinstance(p, dict) else {}
+        kind, company = p.get("kind"), p.get("company") or None
+        choices = []
+        if kind and company and (kind in EVENT_KINDS or kind == "request") and kind != "note":
+            for app in apps:
+                if not _company_matches(company, app["company"]):
+                    continue
+                if (p.get("occurred_on") or "") < app["applied_on"]:
+                    continue
+                if kind != "request" and not is_legal(derive(conn, app)["status"], kind)[0]:
+                    continue
+                if kind == "request" and derive(conn, app)["is_terminal"]:
+                    continue
+                req = p.get("request") if isinstance(p.get("request"), dict) else None
+                label = (f"Add task “{req['description']}” for {app['company']} · {app['role']}"
+                         if kind == "request" and req and req.get("description") else
+                         f"Record {KIND_WORDS.get(kind, kind)} for {app['company']} · {app['role']}")
+                choices.append({"label": label, "app_id": app["id"]})
+        out.append({
+            "review_id": r["id"],
+            "received_on": r["received_on"],
+            "from": parseaddr(r["sender"] or "")[1].rpartition("@")[2] or None,
+            "subject": r["subject"],
+            "summary": _review_summary(r["reason"], kind, company),
+            "gmail_url": gmail_url(r["gmail_msg_id"]),
+            "choices": choices,
+        })
+    return out
+
+
 def cmd_review(conn, a):
     if getattr(a, "review_cmd", None) == "stale":
         return cmd_review_stale(conn, a)
     if getattr(a, "review_cmd", None) in {"show", "approve", "dismiss"}:
         return cmd_review_item(conn, a)
-    rows = conn.execute(
-        "SELECT * FROM review_queue WHERE resolved = 0 ORDER BY id").fetchall()
-    if not rows:
-        print("\n  review queue empty\n")
+    items = review_items(conn, limit=100)
+    if getattr(a, "json", False):
+        print(json.dumps(items, indent=2))
+        return
+    if not items:
+        print("\n  Nothing to review.\n")
         return
     print()
-    for r in rows:
-        print(f"  [{r['id']}] {r['reason']}\n      {r['proposed_json']}")
-    print(f"\n  {len(rows)} pending. Inspect with jt review show <id>.\n")
+    for it in items:
+        print(f"  #{it['review_id']}  {it['received_on'] or '-'}  {it['from'] or '-'}  ·  {it['subject'] or '(no subject)'}")
+        print(f"       {it['summary']}")
+        for c in it["choices"]:
+            print(f"       → {c['label']}:  jt review approve {it['review_id']} --app-id {c['app_id']}")
+        print(f"       → Not needed:  jt review dismiss {it['review_id']}")
+        print()
+    print(f"  {len(items)} to review. Easier: open the jt menu in your menu bar.\n")
 
 
 def cmd_review_stale(conn, a):
