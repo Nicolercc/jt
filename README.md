@@ -164,12 +164,20 @@ jt-sync
 scope, paginates, retries 429/5xx and 403 rate-limit responses, overlaps the watermark by two
 days, and inserts with `INSERT OR IGNORE`. It does not classify anything.
 
-No label filter? Set `GMAIL_QUERY` to a Gmail search instead, and it replaces
-the label scope (the date bound is still added):
+The default searches the configured label plus assessment and scheduling
+platforms and recruiting subject phrases. Set `GMAIL_QUERY` to replace the
+entire default search. The sync date bound is still added:
 
 ```bash
 export GMAIL_QUERY='from:(greenhouse.io OR lever.co OR ashbyhq.com) OR subject:("thank you for applying")'
 ```
+
+Run `jt sync --audit --since YYYY-MM-DD` with existing Gmail credentials
+to compare the broad default search against your local tracker, even if you
+have a custom query. It prints date, sender domain, and subject for missing
+messages. Treat that output as private. The audit opens the database read-only
+and does not import messages, update freshness, or advance the watermark.
+
 
 A search can match mail a filter would not, so review the dry run first.
 
