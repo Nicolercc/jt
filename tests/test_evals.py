@@ -146,3 +146,20 @@ def test_report_names_the_policy_that_actually_ran(monkeypatch):
     assert run_eval(fixtures, use_expected=True,
                     auto_commit_consequential=False)["policy"] == "review consequential kinds"
     assert run_eval(fixtures, use_expected=True)["policy"] == "auto-commit consequential kinds"
+
+
+def test_d3_offer_counts_as_held_recognition():
+    fixtures = [{
+        "id": "offer-1",
+        "body": "We are pleased to offer you the Engineer role at Example.",
+        "expect": {"kind": "offer", "company": "Example", "role": "Engineer",
+                   "should_commit": True},
+        "prior_event": "onsite",
+    }]
+    held = run_eval(fixtures, use_expected=True, auto_commit_consequential=False)
+    auto = run_eval(fixtures, raw_response=held["raw_response"], auto_commit_consequential=True)
+    assert held["correct_held"] == held["per_kind"]["offer"]["correct_held"] == 1
+    assert held["correct_auto"] == held["true_miss"] == 0
+    assert held["coverage"] == auto["coverage"] == 1
+    assert auto["correct_auto"] == 1
+    assert auto["correct_held"] == 0
