@@ -1219,6 +1219,13 @@ def cmd_action(conn, a):
         if a.json:
             return _print_ok(action_id=action_id, state="open")
         print(f"action #{action_id} on #{a.id}: {row['description']} (due {action_due_label(row, tz)})")
+    elif a.action_cmd == "show":
+        row = conn.execute("SELECT state FROM actions WHERE id = ?", (a.action_id,)).fetchone()
+        if row is None:
+            sys.exit(f"error: no action #{a.action_id}")
+        if a.json:
+            return _print_ok(action_id=a.action_id, state=row["state"])
+        print(f"action #{a.action_id}: {row['state']}")
     elif a.action_cmd in ("done", "dismiss"):
         state = "done" if a.action_cmd == "done" else "dismissed"
         set_action_state(conn, a.action_id, state)
@@ -1951,6 +1958,9 @@ def build_parser() -> argparse.ArgumentParser:
         c = act.add_parser(name, help=help_)
         c.add_argument("action_id", type=int)
         c.add_argument("--json", action="store_true")
+    c = act.add_parser("show", help="read the current state of an action")
+    c.add_argument("action_id", type=int)
+    c.add_argument("--json", action="store_true")
     c = act.add_parser("snooze", help="hide an action until a date/time")
     c.add_argument("action_id", type=int)
     c.add_argument("--until", required=True, help="YYYY-MM-DD or 'YYYY-MM-DD HH:MM'")

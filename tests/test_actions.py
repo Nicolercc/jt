@@ -263,3 +263,24 @@ def test_bad_JT_TZ_is_still_a_clear_error(monkeypatch):
     monkeypatch.setenv("JT_TZ", "Mars/Olympus")
     with pytest.raises(SystemExit, match="time zone"):
         jt.viewer_tz()
+
+
+def test_action_show_reconciles_completion_after_lost_response(conn, capsys):
+    import json
+
+    action_id = jt.add_action(conn, app(conn), "Send availability", due_date="2026-08-05")
+    jt.main_args(["action", "done", str(action_id), "--json"])
+    capsys.readouterr()
+    jt.main_args(["action", "show", str(action_id), "--json"])
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": True, "action_id": action_id, "state": "done",
+    }
+
+
+def test_action_show_reports_missing_action(conn, capsys):
+    import json
+
+    with pytest.raises(SystemExit) as exc:
+        jt.main_args(["action", "show", "999", "--json"])
+    assert exc.value.code == 1
+    assert json.loads(capsys.readouterr().out)["ok"] is False
