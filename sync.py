@@ -20,10 +20,19 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from contextlib import closing
+from email.utils import parseaddr
+import sqlite3
+
 import jt
 
 GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 DEFAULT_LABEL = "jobsearch"
+RECRUITING_SENDERS = (
+    "codesignal hackerrank hirevue modernhire karat coderpad testgorilla "
+    "calendly goodtime gem paradox myinterview"
+).split()
+RECRUITING_SUBJECTS = ("assessment", "interview", "availability", "schedule", "next steps", "invited")
 DEFAULT_OVERLAP_DAYS = 2
 DEFAULT_LOOKBACK_DAYS = 30
 MAX_BODY_CHARS = 4000
@@ -84,7 +93,7 @@ def _is_unattended() -> bool:
     return os.environ.get("JT_UNATTENDED") == "1"
 
 
-def build_gmail_service():
+def build_gmail_service(*, persist_credentials: bool = True):
     (
         Request,
         Credentials,
@@ -104,7 +113,8 @@ def build_gmail_service():
         )
     creds = None
     if token_path.exists():
-        token_path.chmod(0o600)
+        if persist_credentials:
+            token_path.chmod(0o600)
         creds = Credentials.from_authorized_user_file(str(token_path), [GMAIL_SCOPE])
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
@@ -118,7 +128,7 @@ def build_gmail_service():
                     ) from e
                 raise
         else:
-            if _is_unattended():
+            if _is_unattended() or not persist_credentials:
                 raise SystemExit(
                     "error: Gmail credentials are not valid for unattended use; "
                     "run jt-sync interactively to refresh GOOGLE_TOKEN_PATH"
@@ -136,9 +146,10 @@ def build_gmail_service():
                     "OAuth client allows this Gmail account, then rerun jt-sync "
                     "interactively."
                 ) from e
-        token_path.parent.mkdir(parents=True, exist_ok=True)
-        token_path.write_text(creds.to_json(), encoding="utf-8")
-        token_path.chmod(0o600)
+        if persist_credentials:
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            token_path.write_text(creds.to_json(), encoding="utf-8")
+            token_path.chmod(0o600)
     return build("gmail", "v1", credentials=creds)
 
 
@@ -302,7 +313,45 @@ def gmail_query(label: str, since_day: str, search: str | None = None) -> str:
     search = (search or "").strip()
     if search:
         return f"({search}) {after}"
-    return f"label:{label} {after}"
+    terms = [f"label:{label}"]
+    terms.extend(f"from:{name}" for name in RECRUITING_SENDERS)
+    terms.extend(f'subject:"{subject}"' for subject in RECRUITING_SUBJECTS)
+    return "{" + " ".join(terms) + "} " + after
+
+
+def audit_missing(since: str) -> None:
+    """Print missing Gmail metadata without initializing or updating the tracker."""
+    try:
+        since_day = date.fromisoformat(since).isoformat()
+    except ValueError:
+        raise SystemExit("error: --since requires YYYY-MM-DD") from None
+    if since_day != since:
+        raise SystemExit("error: --since requires YYYY-MM-DD")
+    uri = jt.db_path().resolve().as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True)) as conn:
+        known = {row[0] for row in conn.execute("SELECT gmail_msg_id FROM raw_messages")}
+    service = build_gmail_service(persist_credentials=False)
+    messages = service.users().messages()
+    query = gmail_query(os.environ.get("GMAIL_LABEL", DEFAULT_LABEL), since_day)
+    token = None
+    while True:
+        page = execute_with_retry(messages.list(userId="me", q=query, pageToken=token))
+        for match in page.get("messages", []):
+            msg_id = match["id"]
+            if msg_id in known:
+                continue
+            item = execute_with_retry(messages.get(
+                userId="me", id=msg_id, format="metadata", metadataHeaders=["From", "Subject"],
+            ))
+            headers = _headers(item.get("payload", {}))
+            address = parseaddr(headers.get("from", ""))[1]
+            domain = address.rpartition("@")[2].lower()
+            subject = " ".join(headers.get("subject", "").split())
+            print(f"{_received_day(item) or '-'}\t{domain or '-'}\t{subject or '-'}")
+            known.add(msg_id)
+        token = page.get("nextPageToken")
+        if not token:
+            break
 
 
 def insert_rows(conn, rows: list[RawMessage]) -> int:

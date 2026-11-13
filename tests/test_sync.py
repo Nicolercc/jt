@@ -271,9 +271,37 @@ def test_empty_first_sync_does_not_create_watermark(conn):
     assert sync._watermark(conn) is None
 
 
-def test_query_defaults_to_label_scope():
-    assert sync.gmail_query("jobsearch", "2026-10-01") == "label:jobsearch after:2026/10/01"
-    assert sync.gmail_query("jobsearch", "2026-10-01", "  ") == "label:jobsearch after:2026/10/01"
+def test_query_defaults_to_label_or_recruiting_search():
+    q = sync.gmail_query("jobsearch", "2026-10-01")
+    assert q.startswith("{label:jobsearch ")
+    assert q.endswith("} after:2026/10/01")
+    for name in ("codesignal hackerrank hirevue modernhire karat coderpad testgorilla "
+                 "calendly goodtime gem paradox myinterview").split():
+        assert f"from:{name} " in q
+    for subject in ("assessment", "interview", "availability", "schedule", "next steps", "invited"):
+        assert f'subject:"{subject}"' in q
+
+
+def test_audit_cli_reports_missing_metadata_without_writing_db(conn, monkeypatch, capsys):
+    with jt.write_txn(conn):
+        conn.execute("INSERT INTO raw_messages (gmail_msg_id) VALUES ('present')")
+    path = jt.db_path()
+    before = path.read_bytes()
+    service = Service(
+        [{"messages": [{"id": "present"}], "nextPageToken": "next"},
+         {"messages": [{"id": "missing"}]}],
+        {"missing": message("missing", sender="Recruiter <person@example.com>",
+                            subject="Assessment invitation")},
+    )
+    monkeypatch.setenv("GMAIL_QUERY", "from:narrow.example")
+    monkeypatch.setattr(sync, "build_gmail_service", lambda **kwargs: service)
+    jt.main_args(["sync", "--audit", "--since", "2026-08-01"])
+    assert capsys.readouterr().out == "2026-08-12\texample.com\tAssessment invitation\n"
+    assert len(service.messages_obj.queries) == 2
+    assert all("from:codesignal" in q and "narrow.example" not in q
+               for q in service.messages_obj.queries)
+    assert path.read_bytes() == before
+    assert conn.execute("SELECT COUNT(*) FROM raw_messages").fetchone()[0] == 1
 
 
 def test_search_override_replaces_label_and_keeps_date_bound():

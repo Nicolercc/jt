@@ -1864,6 +1864,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="jt", description="job application tracker")
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    s = sub.add_parser("sync", help="audit Gmail coverage without importing messages")
+    s.add_argument("--audit", action="store_true", required=True)
+    s.add_argument("--since", required=True, metavar="YYYY-MM-DD")
+
     s = sub.add_parser("add", help="log one application")
     s.add_argument("company"); s.add_argument("role")
     s.add_argument("--lane", required=True, choices=LANES)
@@ -2015,6 +2019,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run(a) -> None:
+    if a.cmd == "sync":
+        from sync import audit_missing
+
+        audit_missing(a.since)
+        return
     conn = connect()
     try:
         a.fn(conn, a)
