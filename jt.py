@@ -1713,6 +1713,26 @@ def cmd_review_item(conn, a):
                 "SELECT subject, received_on FROM raw_messages WHERE gmail_msg_id = ?",
                 (row["gmail_msg_id"],),
             ).fetchone()
+            if getattr(a, "json", False):
+                proposal = json.loads(row["proposed_json"])
+                company = proposal.get("company") if isinstance(proposal, dict) else None
+                candidates = []
+                if not row["resolved"] and isinstance(company, str) and company.strip():
+                    normalized = " ".join(company.casefold().split())
+                    for app in conn.execute("SELECT * FROM applications ORDER BY role, id"):
+                        if " ".join(app["company"].casefold().split()) == normalized:
+                            candidates.append(dict(
+                                id=app["id"], role=app["role"], stage=derive(conn, app)["status"],
+                            ))
+                return _print_ok(
+                    candidates=candidates, gmail_url=gmail_url(row["gmail_msg_id"]),
+                    review_id=row["id"], resolved=bool(row["resolved"]),
+                    event_id=row["resolved_event_id"], reason=row["reason"],
+                    gmail_msg_id=row["gmail_msg_id"],
+                    subject=msg["subject"] if msg else None,
+                    received_on=msg["received_on"] if msg else None,
+                    proposal=proposal,
+                )
             print(f"#{row['id']} {'resolved' if row['resolved'] else 'pending'}: {row['reason']}")
             if msg:
                 print(f"{msg['received_on'] or '-'}  {msg['subject'] or '-'}")
@@ -1744,7 +1764,14 @@ def cmd_review_item(conn, a):
             kind = proposal.get("kind")
             if not isinstance(kind, str) or kind == "note" or kind not in EVENT_KINDS:
                 sys.exit("error: invalid proposed event kind")
-            legal, reason = is_legal(derive(conn, app)["status"], kind)
+            current_stage = derive(conn, app)["status"]
+            expected_stage = getattr(a, "expected_stage", None)
+            if expected_stage is not None and expected_stage != current_stage:
+                sys.exit(
+                    f"error: application stage changed from {expected_stage} to "
+                    f"{current_stage}; reload the review before confirming"
+                )
+            legal, reason = is_legal(current_stage, kind)
             if not legal:
                 sys.exit(f"error: {reason}")
             proposed_day = proposal.get("occurred_on")
@@ -1992,6 +2019,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("review_cmd", nargs="?", choices=["stale", "show", "approve", "dismiss"])
     s.add_argument("queue_id", nargs="?", type=int)
     s.add_argument("--app-id", type=int)
+    s.add_argument("--expected-stage", help="approve only if the application is still at this stage")
     s.add_argument("--override-company", action="store_true")
     s.add_argument("--note")
     s.add_argument("--queue-threshold", type=int, default=None)
@@ -1999,7 +2027,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--failure-threshold", type=int, default=None)
     s.add_argument("--log")
     s.add_argument("--no-fail", action="store_true")
-    s.add_argument("--json", action="store_true", help="approve/dismiss: print a JSON result")
+    s.add_argument("--json", action="store_true", help="show, approve, or dismiss: print a JSON result")
     s.set_defaults(fn=cmd_review)
 
     s = sub.add_parser("resolve", help="mark a review item handled")
