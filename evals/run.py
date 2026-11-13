@@ -85,6 +85,46 @@ def summarize(fixtures: list[dict], actual_by_id: dict[str, dict],
     }
 
 
+def recognition_metrics(fixtures, actual, reviewed, held):
+    def rate(count, n):
+        return {"count": count, "n": n, "value": count / n if n else None,
+                "ci": wilson(count, n)}
+
+    def score(group):
+        counts = dict.fromkeys(
+            ("correct_auto", "correct_held", "wrong_auto", "wrong_terminal_auto", "true_miss"), 0)
+        workload = recognize = 0
+        for fixture in group:
+            key = fixture["id"]
+            expected = fixture.get("expect") or {}
+            should = expected.get("should_recognize", expected.get("should_commit", False))
+            recognize += bool(should)
+            workload += key in reviewed
+            outcome = actual.get(key) or held.get(key)
+            correct = bool(should and outcome and
+                           (outcome["kind"], outcome["company"], outcome["role"]) ==
+                           (expected.get("kind"), expected.get("company"),
+                            expected.get("role", "Backend Engineer")))
+            if key in actual:
+                counts["correct_auto" if correct else "wrong_auto"] += 1
+                counts["wrong_terminal_auto"] += not correct and outcome["kind"] in transitions.TERMINAL_STATES
+            elif correct:
+                counts["correct_held"] += 1
+            elif should:
+                counts["true_miss"] += 1
+        coverage = rate(counts["correct_auto"] + counts["correct_held"], recognize)
+        return {**counts, "should_recognize": recognize, "coverage": coverage["value"],
+                "coverage_rate": coverage, "review_workload": rate(workload, len(group)),
+                "wrong_auto_rate": rate(counts["wrong_auto"], len(group)),
+                "n": len(group)}
+
+    groups: dict[str, list[dict]] = {}
+    for fixture in fixtures:
+        kind = (fixture.get("expect") or {}).get("kind") or dataset.NONE_KIND
+        groups.setdefault(kind, []).append(fixture)
+    return {**score(fixtures), "per_kind": {k: score(v) for k, v in sorted(groups.items())}}
+
+
 def _fixture_lines(path: Path):
     if path.exists():
         return path.open(encoding="utf-8")
@@ -194,6 +234,14 @@ def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None,
                 FROM events e JOIN applications a ON a.id = e.application_id
                 WHERE e.gmail_msg_id IS NOT NULL""").fetchall()
             review_reasons = dict(conn.execute("SELECT gmail_msg_id, reason FROM review_queue"))
+            applications = {row["id"]: row for row in conn.execute("SELECT id, company, role FROM applications")}
+            held = {
+                v.gmail_msg_id: {"kind": v.proposal["kind"], "company": applications[v.application_id]["company"],
+                                 "role": applications[v.application_id]["role"]}
+                for v in verdicts
+                if v.proposal and v.application_id in applications
+                and review_reasons.get(v.gmail_msg_id, "").startswith(classify.CONFIRMATION_REASON)
+            }
             candidates = conn.execute("SELECT COUNT(*) FROM application_candidates").fetchone()[0]
         finally:
             if "conn" in locals():
@@ -226,8 +274,13 @@ def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None,
     precision = len(true_commits) / len(actual_by_id) if actual_by_id else 1.0
     recall = len(true_commits) / len(expected_commits) if expected_commits else 1.0
     summary = summarize(fixtures, actual_by_id, review_reasons)
+    recognition = recognition_metrics(fixtures, actual_by_id, review_reasons, held)
+    for kind, metrics in recognition["per_kind"].items():
+        summary["per_kind"][kind].update(metrics)
+    recognition["per_kind"] = summary["per_kind"]
     return {
         **summary,
+        **recognition,
         "fixtures": len(fixtures),
         "expected_commits": len(expected_commits),
         "actual_commits": len(actual_by_id),
@@ -259,34 +312,20 @@ def _pct_ci(value: float, ci: tuple[float, float]) -> str:
 def print_report(report: dict, label: str = "all") -> None:
     print(f"set: {label}")
     print(f"fixtures: {report['fixtures']}")
-    print(f"expected commits: {report['expected_commits']}")
-    print(f"actual commits: {report['actual_commits']}")
-    print(f"correct commits: {report['correct_commits']}")
-    print(f"precision: {_pct_ci(report['precision'], report['precision_ci'])}")
-    print(f"recall: {_pct_ci(report['recall'], report['recall_ci'])}")
-    print(f"missed expected commits: {report['missed_expected_commits']}")
-    print(f"queued for review: {report['reviewed']}")
-    print(f"application candidates: {report['application_candidates']}")
-    print(f"review rate: {report['review_rate']:.1%}")
-    print(f"policy: {report['policy']}; held for your confirmation: "
-          f"{report['held_for_confirmation']}")
-    print()
-    print(f"{'kind':<12}{'n':>5}{'correct':>9}{'wrong':>7}{'review':>8}{'missed':>8}")
-    for kind, k in report["per_kind"].items():
-        print(f"{kind:<12}{k['n']:>5}{k['correct']:>9}{k['wrong']:>7}"
-              f"{k['reviewed']:>8}{k['missed']:>8}")
-    print()
-    for msg_id, expected, actual, reason in report["discrepancies"]:
-        print(f"{msg_id}: expected={expected} actual={actual} — {reason}")
-    print()
-    lo, hi = report["wrong_commits_ci"]
-    print(f"WRONG AUTO-COMMITS PER 100 EMAILS: {report['wrong_commits_per_100']:.1f}"
-          f"  (95% CI {100 * lo:.1f}–{100 * hi:.1f}, n={report['n']})")
-    print(f"WRONG TERMINAL-STATE COMMITS: {report['wrong_terminal_commits']}  (target 0)")
-    print(
-        "MISCLASSIFICATIONS THAT REACHED EVENTS: "
-        f"{report['misclassifications_reached_events']}"
-    )
+    print(f"policy: {report['policy']}")
+    for kind, row in [("total", report), *report["per_kind"].items()]:
+        print(f"{kind} (n={row['n']}): " + ", ".join(
+            f"{key}={row[key]}" for key in
+            ("correct_auto", "correct_held", "wrong_auto", "wrong_terminal_auto", "true_miss")))
+        for key, label in (("wrong_auto_rate", "Wrong auto per 100 (target ≤ 2)"),
+                           ("review_workload", "Reviews per 100"),
+                           ("coverage_rate", "Coverage")):
+            metric = row[key]
+            value = metric["value"]
+            lo, hi = metric["ci"]
+            shown = "n/a" if value is None else f"{100 * value:.1f}"
+            print(f"  {label}: {shown} (95% CI {100 * lo:.1f}–{100 * hi:.1f}, n={metric['n']})")
+    print("Wrong terminal auto target: 0")
 
 
 def build_parser() -> argparse.ArgumentParser:
