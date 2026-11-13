@@ -833,17 +833,56 @@ def _request_deadline(request, body: str, received: date):
         return received.isoformat(), None, None, "invalid deadline or outside 120-day window"
 
 
+# PRD R12: an invite and its reminder describe the same task.
+SAME_TASK_MIN_RATIO = 85.0
+RECENTLY_CLOSED_DAYS = 14
+
+
+def _norm_task(text: str) -> str:
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    return " ".join(w for w in words if w not in {"the", "a", "an", "your", "on", "for", "to"})
+
+
+def _matching_task(conn, app_id: int, description: str, received: date) -> tuple[str, Any]:
+    """('merge', row) for an open or snoozed task with the same meaning,
+    ('skip', row) if one was closed recently, else ('new', None)."""
+    want = _norm_task(description)
+    for row in conn.execute("SELECT * FROM actions WHERE application_id = ? ORDER BY id DESC", (app_id,)):
+        if _ratio(want, _norm_task(row["description"])) < SAME_TASK_MIN_RATIO:
+            continue
+        if row["state"] in ("open", "snoozed"):
+            return "merge", row
+        closed = (row["closed_at"] or "")[:10]
+        if closed and closed >= (received - timedelta(days=RECENTLY_CLOSED_DAYS)).isoformat():
+            return "skip", row
+    return "new", None
+
+
 def write_request(conn, app_id: int, proposal: dict[str, Any], event_id: int | None) -> None:
     request = proposal.get("request")
     if request is None:
         return
-    raw = conn.execute("SELECT received_on, body FROM raw_messages WHERE gmail_msg_id = ?",
+    raw = conn.execute("SELECT received_on, subject, body FROM raw_messages WHERE gmail_msg_id = ?",
                        (proposal["gmail_msg_id"],)).fetchone()
     received = date.fromisoformat(raw["received_on"] or proposal["occurred_on"])
     day, utc, tz, reason = _request_deadline(request, raw["body"] or "", received)
     inference = proposal.get("role_inference")
     if inference:
         reason = f"{inference}; {reason}" if reason else inference
+    explicit_deadline = bool(request.get("due_iso")) and reason in (None, inference)
+    match, row = _matching_task(conn, app_id, request["description"].strip(), received)
+    if match == "skip":
+        return
+    if match == "merge":
+        note = f"also in a later email ({received.isoformat()})"
+        if explicit_deadline:
+            note = f"deadline from a later email ({received.isoformat()})"
+            conn.execute("UPDATE actions SET due_date = ?, due_at_utc = ?, due_tz = ? WHERE id = ?",
+                         (day, utc, tz, row["id"]))
+        old = row["reason"] or ""
+        conn.execute("UPDATE actions SET reason = ? WHERE id = ?",
+                     (f"{old}; {note}" if old else note, row["id"]))
+        return
     conn.execute(
         """INSERT OR IGNORE INTO actions
            (application_id, description, due_date, due_at_utc, due_tz, reason,
