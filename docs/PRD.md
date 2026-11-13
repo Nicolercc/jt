@@ -74,7 +74,7 @@ Job-search updates are scattered across Gmail, assessment platforms and memory. 
 | R2 | Email request → one task with a validated deadline and source link | ✅ #26, #28 (live-verified on Ramp/Hireflix) |
 | R3 | Consequential changes (rejection, offer…) always need confirmation | ✅ #15 |
 | R4 | Menu: due tasks, reviews, suggestions; every row has a verb; failures visible | ✅ #16, #27 |
-| R5 | **Two roles at one company resolve automatically when the evidence allows** | ❌ **Now-E1** |
+| R5 | Two roles at one company resolve automatically when the evidence allows | ✅ #30 |
 | R6 | **Review only shows things that need a decision** (non-job mail goes to "ignored") | ❌ **Now-E2** |
 | R7 | Accuracy measured on ≥ 150 labeled emails, 20% frozen holdout | ❌ **Now-3** (23 labeled) |
 | R8 | One-command deploy with a version check | ❌ **Now-E3** |
@@ -85,6 +85,7 @@ Job-search updates are scattered across Gmail, assessment platforms and memory. 
 | R9 | Review in one place: email quote, proposed change, candidate roles, one-key approve or dismiss | ❌ Next |
 | R10 | "Why?" for every automatic change (`jt explain`) | ❌ Next |
 | R11 | Follow-up suggestions age out to CLOSE OUT sensibly (no "50 days quiet" nudges) | ❌ Next |
+| R12 | A reminder email for an existing open task updates that task instead of adding a duplicate (found in the E1 replay: invite + reminder made 2 tasks) | ❌ Next |
 
 ### P2: after M6
 Native star app (Finder launch, notifications), Apple Reminders for phone reach, Homebrew install for v2 users, Keychain for the OAuth token.
@@ -123,7 +124,7 @@ Native star app (Finder launch, notifications), Apple Reminders for phone reach,
 | **Now-2** | Nicole | Start the test week: use the panel daily, note every time you fall back to Gmail and why | 5 active days logged |
 | **Now-3** | Nicole | Label the 117 emails in 3–4 sittings; prioritize deadline and assessment emails | `evals.dataset check` shows ≥ 150 labeled, no spelling variants |
 | **Now-4** | Nicole | Check the Google OAuth publishing status; switch Testing → In production (free) | No 7-day sign-in expiry |
-| **Now-E1** | Eng | **Same-company role resolution:** if an email names no role, pick the candidate role that has a same-company email event within ±3 days; if still tied, review | Both Ramp CodeSignal cases resolve to CX Agent in a replay test; a genuine tie still goes to review |
+| **Now-E1** | Eng | ✅ **Same-company role resolution** (#30). The planned "±3 days" rule failed on real data (both Ramp roles were applied to and emailed on the same day). Replaced by evidence rules for progress emails only: skip closed applications; otherwise pick the only application with an active process; else review. The inference is shown in the task's reason. | Done: both real Ramp CodeSignal cases resolve to CX Agent; genuine ties still go to review |
 | **Now-E2** | Eng | **Ignored bucket:** a "no proposal" email from a sender that isn't a recruiting sender goes to `ignored` (visible via `jt ignored`, restorable), not Review | Dior, GitHub and Tailscale-style mail never enters Review; a test proves an ATS sender still does |
 | **Now-E3** | Eng | `jt version` (commit + schema) + `scripts/deploy.sh` (backup → verify → pull → kickstart → verify freshness) | One command deploys; the panel footer shows the version |
 | **Now-E4** | Eng | Hygiene: add Hireflix to the default senders; close #17; close or rebase #18–#20 on v8; leave #21/#22 frozen; prune merged local copies | ≤ 1 dev copy + production; no stale PRs |
