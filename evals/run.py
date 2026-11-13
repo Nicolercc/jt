@@ -157,7 +157,7 @@ def seed_db(conn, fixtures: list[dict]) -> None:
         company = expect.get("company")
         if not company:
             continue
-        roles = fx.get("application_roles", [expect.get("role", "Backend Engineer")] if expect.get("should_commit") else [])
+        roles = fx.get("application_roles", [expect.get("role", "Backend Engineer")] if expect.get("should_commit") or expect.get("request") else [])
         for role in roles:
             _insert_app(conn, company, role)
         prior = fx.get("prior_event")
@@ -194,6 +194,7 @@ def expected_response(fixtures: list[dict]) -> str:
             "occurred_on": "2026-08-02",
             "confidence": 0.99,
             "evidence": evidence,
+            **({"request": {"description": "Reply to recruiter", "due_text": "", "due_iso": "", "due_tz": "", **expect["request"]}} if expect.get("request") else {}),
         })
     return json.dumps(proposals)
 
@@ -233,6 +234,12 @@ def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None,
             actual_rows = conn.execute("""SELECT e.gmail_msg_id, e.kind, a.company, a.role
                 FROM events e JOIN applications a ON a.id = e.application_id
                 WHERE e.gmail_msg_id IS NOT NULL""").fetchall()
+            action_rows = conn.execute("""
+                SELECT x.source_gmail_msg_id, x.due_date, x.due_at_utc, x.due_tz,
+                       x.description, a.company, a.role
+                FROM actions x JOIN applications a ON a.id = x.application_id
+                WHERE x.source_gmail_msg_id IS NOT NULL
+            """).fetchall()
             review_reasons = dict(conn.execute("SELECT gmail_msg_id, reason FROM review_queue"))
             applications = {row["id"]: row for row in conn.execute("SELECT id, company, role FROM applications")}
             held = {
@@ -273,6 +280,24 @@ def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None,
 
     precision = len(true_commits) / len(actual_by_id) if actual_by_id else 1.0
     recall = len(true_commits) / len(expected_commits) if expected_commits else 1.0
+    actions = {row["source_gmail_msg_id"]: row for row in action_rows}
+    requests = dict(correct=0, wrong_role=0, missed=0, wrong_due_date=0,
+                    wrong_description=0, unexpected=0)
+    for msg_id, exp in expected.items():
+        request = exp.get("request")
+        action = actions.get(msg_id)
+        if request is None:
+            requests["unexpected"] += action is not None
+        elif action is None:
+            requests["missed"] += 1
+        elif (action["company"], action["role"]) != (exp["company"], exp.get("role", "Backend Engineer")):
+            requests["wrong_role"] += 1
+        elif request.get("due_iso") and (action["due_date"] or action["due_at_utc"]) != request.get("expected_due", request["due_iso"]):
+            requests["wrong_due_date"] += 1
+        elif request.get("description") and action["description"] != request["description"]:
+            requests["wrong_description"] += 1
+        else:
+            requests["correct"] += 1
     summary = summarize(fixtures, actual_by_id, review_reasons)
     recognition = recognition_metrics(fixtures, actual_by_id, review_reasons, held)
     for kind, metrics in recognition["per_kind"].items():
@@ -281,6 +306,7 @@ def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None,
     return {
         **summary,
         **recognition,
+        "requests": requests,
         "fixtures": len(fixtures),
         "expected_commits": len(expected_commits),
         "actual_commits": len(actual_by_id),
@@ -312,6 +338,7 @@ def _pct_ci(value: float, ci: tuple[float, float]) -> str:
 def print_report(report: dict, label: str = "all") -> None:
     print(f"set: {label}")
     print(f"fixtures: {report['fixtures']}")
+    print(f"requests: {report['requests']}")
     print(f"policy: {report['policy']}")
     for kind, row in [("total", report), *report["per_kind"].items()]:
         print(f"{kind} (n={row['n']}): " + ", ".join(

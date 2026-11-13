@@ -9,7 +9,8 @@ def test_eval_harness_runs_against_redacted_example():
     # Harness self-test: pin the pre-D3 policy so every expected commit can land.
     report = run_eval(fixtures, use_expected=True, auto_commit_consequential=True)
 
-    assert report["fixtures"] == 8
+    assert report["fixtures"] == 9
+    assert report["requests"]["correct"] == 1
     assert report["misclassifications_reached_events"] == 0
     assert report["precision"] == 1.0
     assert report["recall"] == 1.0

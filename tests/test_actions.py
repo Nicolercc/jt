@@ -263,3 +263,28 @@ def test_bad_JT_TZ_is_still_a_clear_error(monkeypatch):
     monkeypatch.setenv("JT_TZ", "Mars/Olympus")
     with pytest.raises(SystemExit, match="time zone"):
         jt.viewer_tz()
+
+
+def test_email_actions_migration_preserves_v6_rows_and_runs_once(conn):
+    app_id = app(conn)
+    action_id = jt.add_action(conn, app_id, "Reply", due_date="2026-08-05")
+    jt.set_action_state(conn, action_id, "done")
+    expected = dict(conn.execute("SELECT * FROM actions").fetchone())
+    expected.pop("source_gmail_msg_id")
+    with jt.write_txn(conn):
+        conn.execute("DROP INDEX actions_by_email")
+        conn.execute("ALTER TABLE actions RENAME TO actions_fixture")
+        old_ddl = jt.ACTIONS_DDL.replace("    source_gmail_msg_id TEXT,\n", "")
+        conn.execute(old_ddl.replace(",'email'", ""))
+        columns = ", ".join(expected)
+        conn.execute(f"INSERT INTO actions ({columns}) SELECT {columns} FROM actions_fixture")
+        conn.execute("DROP TABLE actions_fixture")
+        conn.execute("UPDATE sync_state SET value='6' WHERE key='schema_version'")
+    for _ in range(2):
+        with jt.connect() as migrated:
+            assert dict(migrated.execute("SELECT * FROM actions").fetchone()) == {
+                **expected, "source_gmail_msg_id": None,
+            }
+            assert migrated.execute(
+                "SELECT value FROM sync_state WHERE key='schema_version'"
+            ).fetchone()[0] == "7"
