@@ -374,3 +374,18 @@ def test_more_suggestions_than_shown_are_counted(plugin):
     lines = plugin.render(snap(suggestions=sug), None, NOW)
     assert sum(1 for x in lines if x.startswith("Close out?")) == 3
     assert any(x.startswith("+7 more to close out") for x in lines)
+
+
+def test_record_button_sends_the_expected_stage(plugin, monkeypatch):
+    it = item(rid=7, choices=[{"label": "Record interview for Ramp · CX Agent", "app_id": 10,
+                               "stage": "screen"}])
+    s = snap(badge={"due": 0, "reviews": 1},
+             review={"pending": 1, "oldest_days": 0, "top": None, "items": [it]})
+    rec = next(x for x in plugin.render(s, None, NOW) if "Record interview" in x)
+    assert 'param1=approve param2="7" param3="10" param4="screen"' in rec
+    calls = []
+    class R:
+        returncode, stdout, stderr = 0, json.dumps({"ok": True}), ""
+    monkeypatch.setattr(plugin, "jt", lambda *a, **k: calls.append(a) or R())
+    assert plugin.handle_click(["approve", "7", "10", "screen"]) == 0
+    assert calls[0] == ("review", "approve", "7", "--app-id", "10", "--expected-stage", "screen", "--json")

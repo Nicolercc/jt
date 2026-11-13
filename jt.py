@@ -1863,8 +1863,15 @@ def cmd_review_item(conn, a):
             kind = proposal.get("kind")
             if not isinstance(kind, str) or kind == "note" or (kind not in EVENT_KINDS and kind != "request"):
                 sys.exit("error: invalid proposed event kind")
+            current_stage = derive(conn, app)["status"]
+            # From Codex's #19: a menu button was computed at one stage; if the
+            # application has moved on since (e.g. the hourly job ran), refuse.
+            expected_stage = getattr(a, "expected_stage", None)
+            if expected_stage is not None and expected_stage != current_stage:
+                sys.exit(f"error: this application moved from {expected_stage} to "
+                         f"{current_stage}; reload the review before confirming")
             if kind != "request":
-                legal, reason = is_legal(derive(conn, app)["status"], kind)
+                legal, reason = is_legal(current_stage, kind)
                 if not legal:
                     sys.exit(f"error: {reason}")
             proposed_day = proposal.get("occurred_on")
@@ -1982,7 +1989,8 @@ def review_items(conn, limit: int = 10) -> list[dict]:
                 label = (f"Add task “{req['description']}” for {app['company']} · {app['role']}"
                          if kind == "request" and req and req.get("description") else
                          f"Record {KIND_WORDS.get(kind, kind)} for {app['company']} · {app['role']}")
-                choices.append({"label": label, "app_id": app["id"]})
+                choices.append({"label": label, "app_id": app["id"],
+                                "stage": derive(conn, app)["status"]})
             has_app = any(_company_matches(company, app["company"]) for app in apps)
             if (not has_app and role_hint
                     and (kind == "request" or is_legal("applied", kind)[0])):
@@ -2268,6 +2276,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--lane", choices=LANES, help="add-app: lane for the new application")
     s.add_argument("queue_id", nargs="?", type=int)
     s.add_argument("--app-id", type=int)
+    s.add_argument("--expected-stage", help="approve only if the application is still at this stage")
     s.add_argument("--override-company", action="store_true")
     s.add_argument("--note")
     s.add_argument("--queue-threshold", type=int, default=None)

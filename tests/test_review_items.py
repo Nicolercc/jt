@@ -184,3 +184,28 @@ def test_no_choice_is_offered_when_the_evidence_is_not_in_the_email(conn):
                "evidence": "words that appear nowhere"},
            sender="recruiting@td.com", subject="Hello", body="Nothing relevant.")
     assert items(conn)[0]["choices"] == []
+
+
+# ---------------------------------------------------------------- stale stage (from #19)
+
+def test_choices_carry_the_stage_they_were_computed_for(conn):
+    with jt.write_txn(conn):
+        conn.execute("INSERT INTO events (application_id, occurred_on, kind) VALUES (10, '2026-08-29', 'response')")
+    review(conn, "m2", "confidence below threshold", P("tech") | {"gmail_msg_id": "m2"})
+    [it] = items(conn)
+    assert it["choices"][0]["stage"] == "screen"
+
+
+def test_approval_is_refused_if_the_stage_changed_since_you_looked(conn, capsys):
+    """Originally Codex's #19: the menu showed a choice computed at one stage;
+    if the hourly job moved the application on, the click must not apply."""
+    rid = review(conn, "m2", "confidence below threshold", P("tech") | {"gmail_msg_id": "m2"})
+    with pytest.raises(SystemExit):
+        jt.main_args(["review", "approve", str(rid), "--app-id", "10",
+                      "--expected-stage", "confirmed", "--json"])
+    err = json.loads(capsys.readouterr().out)
+    assert "reload" in err["error"]
+    assert conn.execute("SELECT resolved FROM review_queue WHERE id = ?", (rid,)).fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE kind = 'tech'").fetchone()[0] == 0
+    jt.main_args(["review", "approve", str(rid), "--app-id", "10", "--expected-stage", "screen", "--json"])
+    assert json.loads(capsys.readouterr().out)["ok"]
