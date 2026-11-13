@@ -61,6 +61,7 @@ import html
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import unicodedata
 from datetime import date, datetime, time, timedelta, timezone
@@ -310,6 +311,24 @@ CREATE TABLE IF NOT EXISTS sync_state (
 # --------------------------------------------------------------------------
 # Plumbing
 # --------------------------------------------------------------------------
+
+REPO_DIR = Path(__file__).resolve().parent
+
+
+def version_info() -> dict:
+    """Which code is running: short commit, uncommitted-changes flag, schema.
+    PRD Now-E3: production once fell 6 commits behind without anyone noticing."""
+    def git(*args: str) -> str:
+        r = subprocess.run(["git", "-C", str(REPO_DIR), *args], capture_output=True,
+                           text=True, timeout=5)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    try:
+        commit = git("rev-parse", "--short", "HEAD") or "unknown"
+        dirty = bool(git("status", "--porcelain", "--untracked-files=no")) if commit != "unknown" else False
+    except (OSError, subprocess.TimeoutExpired):
+        commit, dirty = "unknown", False
+    return {"commit": commit, "dirty": dirty, "schema": SCHEMA_VERSION}
+
 
 def db_path() -> Path:
     p = os.environ.get("JT_DB")
@@ -1033,6 +1052,7 @@ def today_snapshot(conn, today: date, now: datetime, tz: ZoneInfo) -> dict:
         "actions": actions,
         "suggestions": suggestions,
         "recorded": recorded,
+        "version": {k: v for k, v in version_info().items() if k != "dirty"},
         "review": {"pending": stats["total"], "oldest_days": stats["oldest_age_days"],
                    "top": {"review_id": top["id"], "reason": top["reason"]} if top else None},
     }
@@ -1913,6 +1933,14 @@ def cmd_resolve(conn, a):
         print(f"resolved queue item {a.queue_id}")
 
 
+def cmd_version(conn, a):
+    v = version_info()
+    if a.json:
+        print(json.dumps(v))
+    else:
+        print(f"jt {v['commit']}{'+uncommitted' if v['dirty'] else ''} · schema {v['schema']}")
+
+
 def cmd_where(conn, a):
     print(db_path())
 
@@ -2075,6 +2103,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--event-id", type=int)
     s.add_argument("--note")
     s.set_defaults(fn=cmd_resolve)
+
+    s = sub.add_parser("version", help="which commit and schema this jt is running")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_version)
 
     s = sub.add_parser("where", help="print database path")
     s.set_defaults(fn=cmd_where)
