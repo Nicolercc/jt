@@ -171,3 +171,71 @@ def test_menu_open_is_logged(plugin, tmp_path, monkeypatch, capsys):
 
 def test_snooze_goes_to_tomorrow_morning(plugin):
     assert plugin.tomorrow_at("09:00", date(2026, 8, 5)) == "2026-08-06 09:00"
+
+
+def test_cached_rows_have_context_without_mutation_controls(plugin):
+    lines = plugin.render(snap(actions=[act(1)]), "offline", NOW)
+    assert any("Showing data from" in line for line in lines)
+    assert any("Acme · Engineer · Today" in line for line in lines)
+    assert not any(line.startswith(("--Done", "--Snooze")) for line in lines)
+    assert any("Quit jt panel" in line for line in lines)
+
+
+def test_done_retry_recognizes_already_completed(plugin, tmp_path, monkeypatch):
+    from subprocess import CompletedProcess
+
+    monkeypatch.setattr(plugin, "CACHE", tmp_path / "panel-cache.json")
+    plugin.save_cache(snap(actions=[act(1)]))
+    replies = iter([
+        CompletedProcess([], 1, "", ""),
+        CompletedProcess([], 1, '{"ok":false,"error":"action #1 is already done"}', ""),
+    ])
+    monkeypatch.setattr(plugin, "jt", lambda *args: next(replies))
+    assert plugin.handle_click(["done", "1"]) == 1
+    assert any("Retry" in line for line in plugin.render(plugin.read_cache(), None, NOW))
+    assert plugin.handle_click(["done", "1"]) == 0
+    assert "failure" not in plugin.read_cache()
+
+
+def test_review_launcher_quotes_paths_with_spaces(plugin, monkeypatch):
+    import shlex
+    from subprocess import CompletedProcess
+
+    monkeypatch.setattr(plugin, "JT_REPO", "/tmp/Repo with spaces")
+    monkeypatch.setattr(plugin, "JT_PYTHON", "/tmp/Python with spaces")
+    def launch(args):
+        assert args[:3] == ["open", "-a", "Terminal"]
+        path = Path(args[3])
+        assert shlex.split(path.read_text().splitlines()[-1]) == [
+            "exec", "/tmp/Python with spaces", "/tmp/Repo with spaces/jt.py", "review",
+        ]
+        return CompletedProcess(args, 1)
+    monkeypatch.setattr(plugin.subprocess, "run", launch)
+    assert plugin.launch_review() == 1
+
+
+def test_suggestion_remind_and_dismiss_are_commands(plugin):
+    lines = plugin.render(snap(suggestions=[{
+        "kind": "FOLLOW UP", "company": "Acme", "role": "Engineer",
+        "application_id": 7, "reason": "No response",
+    }]), None, NOW)
+    assert any('param1=remind param2="7" param3="FOLLOW UP" param4="2026-08-06"' in row for row in lines)
+    assert any('param1=dismiss-suggestion param2="7"' in row for row in lines)
+
+
+def test_timed_action_formats_role_and_day(plugin):
+    action = act(1)
+    action["due"] = {"kind": "time", "value": "2026-08-05T15:00:00Z"}
+    assert any("Acme · Engineer · Today 3 PM" in row
+               for row in plugin.render(snap(actions=[action]), None, NOW))
+
+
+def test_quit_does_not_use_applescript(plugin, monkeypatch):
+    """AppleScript needs the 'control another app' permission, which users
+    reasonably decline; Quit must work without it."""
+    calls = []
+    monkeypatch.setattr(plugin.subprocess, "run",
+                        lambda args, **k: calls.append(args) or type("R", (), {"returncode": 0})())
+    assert plugin.handle_click(["quit"]) == 0
+    assert calls and calls[0][0] != "osascript"
+    assert "osascript" not in PLUGIN.read_text()

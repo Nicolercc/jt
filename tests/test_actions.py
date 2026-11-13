@@ -287,4 +287,23 @@ def test_email_actions_migration_preserves_v6_rows_and_runs_once(conn):
             }
             assert migrated.execute(
                 "SELECT value FROM sync_state WHERE key='schema_version'"
-            ).fetchone()[0] == "7"
+            ).fetchone()[0] == str(jt.SCHEMA_VERSION)
+
+
+def test_v6_database_upgrades_to_v8_with_both_changes(tmp_path, monkeypatch):
+    """v7 (email actions) and v8 (suggestion dismissals) landed separately; a v6
+    database must end up with both, and the recorded version must say 8."""
+    monkeypatch.setenv("JT_DB", str(tmp_path / "v6.db"))
+    c = jt.connect()
+    c.execute("DROP TABLE suggestion_dismissals")
+    c.execute("DROP INDEX IF EXISTS actions_by_email")
+    c.execute("ALTER TABLE actions DROP COLUMN source_gmail_msg_id")
+    c.execute("UPDATE sync_state SET value = '6' WHERE key = 'schema_version'")
+    c.commit()
+    c.close()
+    c = jt.connect()
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(actions)")}
+    assert "source_gmail_msg_id" in cols
+    assert c.execute("SELECT 1 FROM sqlite_master WHERE name = 'suggestion_dismissals'").fetchone()
+    assert c.execute("SELECT value FROM sync_state WHERE key = 'schema_version'").fetchone()[0] == "8"
+    c.close()
