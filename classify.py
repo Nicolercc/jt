@@ -233,6 +233,20 @@ def _ratio(a: str, b: str) -> float:
     return float(fuzz.ratio(a, b))
 
 
+# DESIGN D3. These end or decide an application, and a wrong one is costly:
+# a false "rejected" hides a live application from `jt today`. They go to
+# review even when every other check passes, until the labeled holdout shows
+# the classifier can be trusted with them. CLASSIFIER_AUTO_COMMIT_TERMINAL=1
+# restores auto-commit (the eval uses it to measure the before/after).
+CONSEQUENTIAL_KINDS = frozenset(transitions.TERMINAL_STATES) | {"offer"}
+CONFIRMATION_REASON = "needs your confirmation"
+
+
+def auto_commit_consequential() -> bool:
+    """Only the exact value "1" loosens the policy; anything else stays safe."""
+    return os.environ.get("CLASSIFIER_AUTO_COMMIT_TERMINAL") == "1"
+
+
 def _min_confidence() -> float:
     try:
         return float(os.environ.get("CLASSIFIER_MIN_CONFIDENCE", DEFAULT_MIN_CONFIDENCE))
@@ -588,6 +602,11 @@ def validate_proposal(conn, p: dict[str, Any], messages_by_id: dict[str, sqlite3
     ok, reason = transitions.is_legal(current, p["kind"])
     if not ok:
         return Verdict(p["gmail_msg_id"], False, reason, p)
+    if p["kind"] in CONSEQUENTIAL_KINDS and not auto_commit_consequential():
+        return Verdict(
+            p["gmail_msg_id"], False,
+            f"{CONFIRMATION_REASON}: {p['kind']} for #{app['id']} "
+            "(all other checks passed; DESIGN D3)", p, app["id"])
     return Verdict(p["gmail_msg_id"], True, "", p, app["id"])
 
 

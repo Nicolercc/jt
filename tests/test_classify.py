@@ -1049,7 +1049,9 @@ def _event_kinds(conn):
     return [r["kind"] for r in conn.execute("SELECT kind FROM events ORDER BY id")]
 
 
-def test_batch_cannot_append_a_stage_after_a_terminal_event(conn):
+def test_batch_cannot_append_a_stage_after_a_terminal_event(conn, monkeypatch):
+    # Exercises the legality net for when terminal kinds may auto-commit.
+    monkeypatch.setenv("CLASSIFIER_AUTO_COMMIT_TERMINAL", "1")
     add_app(conn)
     committed, reviewed = _apply_batch(conn, ["rejected", "screen"])
     assert (committed, reviewed) == (1, 1)
@@ -1058,7 +1060,9 @@ def test_batch_cannot_append_a_stage_after_a_terminal_event(conn):
     assert "rejected is terminal" in reason and "same batch" in reason
 
 
-def test_batch_cannot_overwrite_one_terminal_status_with_another(conn):
+def test_batch_cannot_overwrite_one_terminal_status_with_another(conn, monkeypatch):
+    # Exercises the legality net for when terminal kinds may auto-commit.
+    monkeypatch.setenv("CLASSIFIER_AUTO_COMMIT_TERMINAL", "1")
     app_id = add_app(conn)
     _apply_batch(conn, ["rejected", "ghosted"])
     assert _event_kinds(conn) == ["rejected"]
@@ -1202,3 +1206,65 @@ def test_title_contained_in_two_roles_stays_ambiguous(conn):
 
     # Both saved titles appear inside the hint, so neither may be guessed.
     assert "ambiguous role" in conn.execute("SELECT reason FROM review_queue").fetchone()[0]
+
+
+
+# --- D3: consequential kinds always need you ----------------------------------
+# A model that says "rejected" with 0.99 confidence can still be wrong, and a
+# wrong rejection hides the application from `today`. Until the eval proves
+# otherwise (DESIGN D3), these kinds go to review even when everything passes.
+
+@pytest.mark.parametrize("kind", ["rejected", "offer", "withdrawn", "ghosted"])
+def test_consequential_kinds_go_to_review_by_default(conn, monkeypatch, kind):
+    monkeypatch.delenv("CLASSIFIER_AUTO_COMMIT_TERMINAL", raising=False)
+    app_id = add_app(conn)
+    if kind == "offer":   # offer is only legal from a late stage
+        conn.execute("INSERT INTO events (application_id, occurred_on, kind) VALUES (?, '2026-08-01', 'final')", (app_id,))
+        conn.commit()
+    add_raw(conn, "m1", body="we received your application today and thank you")
+    messages = classify.load_unprocessed(conn, 10)
+    verdicts = classify.verdicts_for(conn, messages, json.dumps([proposal("m1", kind=kind)]))
+    assert [v.ok for v in verdicts] == [False]
+    assert verdicts[0].reason.startswith("needs your confirmation")
+    assert classify.apply_verdicts(conn, verdicts) == (0, 1)
+    assert kind not in _event_kinds(conn)
+    reason = conn.execute("SELECT reason FROM review_queue").fetchone()["reason"]
+    assert kind in reason
+
+
+def test_review_reason_says_everything_else_passed(conn, monkeypatch):
+    """The reviewer should know this was held by policy, not because the
+    match or evidence was doubtful."""
+    monkeypatch.delenv("CLASSIFIER_AUTO_COMMIT_TERMINAL", raising=False)
+    add_app(conn)
+    add_raw(conn, "m1", body="we received your application today and thank you")
+    messages = classify.load_unprocessed(conn, 10)
+    v = classify.verdicts_for(conn, messages, json.dumps([proposal("m1", kind="rejected")]))[0]
+    assert "all other checks passed" in v.reason
+    assert v.application_id is not None
+
+
+def test_switch_restores_auto_commit_for_terminal_kinds(conn, monkeypatch):
+    monkeypatch.setenv("CLASSIFIER_AUTO_COMMIT_TERMINAL", "1")
+    add_app(conn)
+    add_raw(conn, "m1", body="we received your application today and thank you")
+    messages = classify.load_unprocessed(conn, 10)
+    verdicts = classify.verdicts_for(conn, messages, json.dumps([proposal("m1", kind="rejected")]))
+    assert classify.apply_verdicts(conn, verdicts) == (1, 0)
+    assert _event_kinds(conn) == ["rejected"]
+
+
+def test_ordinary_stage_changes_still_auto_commit(conn, monkeypatch):
+    monkeypatch.delenv("CLASSIFIER_AUTO_COMMIT_TERMINAL", raising=False)
+    add_app(conn)
+    add_raw(conn, "m1", body="we received your application today and thank you")
+    messages = classify.load_unprocessed(conn, 10)
+    verdicts = classify.verdicts_for(conn, messages, json.dumps([proposal("m1", kind="screen")]))
+    assert classify.apply_verdicts(conn, verdicts) == (1, 0)
+
+
+@pytest.mark.parametrize("value", ["yes", "true", "2", ""])
+def test_switch_only_accepts_exactly_1(monkeypatch, value):
+    """Anything but "1" keeps the safe default, so a typo can't loosen it."""
+    monkeypatch.setenv("CLASSIFIER_AUTO_COMMIT_TERMINAL", value)
+    assert classify.auto_commit_consequential() is False

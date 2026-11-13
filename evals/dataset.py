@@ -172,7 +172,8 @@ def build_fixtures(csv_path: Path, db_paths: Iterable[Path]) -> tuple[list[dict]
             company, role = (r.get("company") or "").strip(), (r.get("role") or "").strip()
             if not company or not role:
                 raise ValueError(f"row {n}: kind {kind!r} needs both company and role")
-            # Changes in M2 (DESIGN D3): terminal kinds will expect review, not commit.
+            # Labels record what the email IS. Whether a kind may auto-commit is
+            # policy (DESIGN D3); `evals.run --policy compare` scores both.
             expect = {"kind": kind, "company": company, "role": role, "should_commit": True}
         fx = {
             "id": fixture_id(n),
