@@ -95,7 +95,7 @@ def evidence_in_body(evidence: str, body: str | None) -> bool:
     needle = normalize_for_match(evidence)
     return bool(needle) and needle in normalize_for_match(body or "")
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # --------------------------------------------------------------------------
 # Domain vocabulary. You own this. Changing it is a schema-level decision.
@@ -183,6 +183,30 @@ CREATE TABLE IF NOT EXISTS events (
 );
 """
 
+ACTIONS_DDL = """
+CREATE TABLE IF NOT EXISTS actions (
+    id              INTEGER PRIMARY KEY,
+    application_id  INTEGER NOT NULL REFERENCES applications(id) ON DELETE RESTRICT,
+    description     TEXT NOT NULL CHECK (length(trim(description)) > 0),
+    due_date        DATE,
+    due_at_utc      TEXT,
+    due_tz          TEXT,
+    state           TEXT NOT NULL DEFAULT 'open'
+                    CHECK (state IN ('open','done','snoozed','dismissed')),
+    snoozed_until   TEXT,
+    reason          TEXT,
+    origin          TEXT NOT NULL DEFAULT 'manual'
+                    CHECK (origin IN ('manual','review','migrated','email')),
+    source_event_id INTEGER REFERENCES events(id),
+    source_gmail_msg_id TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    closed_at       TEXT,
+    CHECK ((due_date IS NULL) != (due_at_utc IS NULL)),
+    CHECK ((due_at_utc IS NULL) = (due_tz IS NULL)),
+    CHECK (state != 'snoozed' OR snoozed_until IS NOT NULL)
+);
+"""
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS applications (
     id            INTEGER PRIMARY KEY,
@@ -225,26 +249,7 @@ CREATE TABLE IF NOT EXISTS raw_messages (
 -- Things you committed to do (DESIGN D1/D2). Many per application. Unlike
 -- events, these are mutable to-dos: done, dismissed, snoozed. A timed action
 -- stores UTC plus the IANA zone it was entered in, so "2pm ET" survives DST.
-CREATE TABLE IF NOT EXISTS actions (
-    id              INTEGER PRIMARY KEY,
-    application_id  INTEGER NOT NULL REFERENCES applications(id) ON DELETE RESTRICT,
-    description     TEXT NOT NULL CHECK (length(trim(description)) > 0),
-    due_date        DATE,
-    due_at_utc      TEXT,
-    due_tz          TEXT,
-    state           TEXT NOT NULL DEFAULT 'open'
-                    CHECK (state IN ('open','done','snoozed','dismissed')),
-    snoozed_until   TEXT,
-    reason          TEXT,
-    origin          TEXT NOT NULL DEFAULT 'manual'
-                    CHECK (origin IN ('manual','review','migrated')),
-    source_event_id INTEGER REFERENCES events(id),
-    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    closed_at       TEXT,
-    CHECK ((due_date IS NULL) != (due_at_utc IS NULL)),
-    CHECK ((due_at_utc IS NULL) = (due_tz IS NULL)),
-    CHECK (state != 'snoozed' OR snoozed_until IS NOT NULL)
-);
+""" + ACTIONS_DDL + """
 CREATE INDEX IF NOT EXISTS actions_by_app ON actions (application_id, state);
 
 -- Phase 3 writes here: anything the classifier is not sure about.
@@ -425,6 +430,7 @@ def connect() -> sqlite3.Connection:
         _migrate_v1_to_v2(conn)
     conn.executescript(SCHEMA)
     _ensure_review_columns(conn)
+    _migrate_email_actions(conn)
     conn.execute(
         "INSERT OR REPLACE INTO sync_state (key, value) VALUES ('schema_version', ?)",
         (str(SCHEMA_VERSION),),
@@ -433,6 +439,22 @@ def connect() -> sqlite3.Connection:
     _migrate_next_actions(conn)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def _migrate_email_actions(conn) -> None:
+    with write_txn(conn):
+        columns = [row["name"] for row in conn.execute("PRAGMA table_info(actions)")]
+        if "source_gmail_msg_id" not in columns:
+            names = ", ".join(columns)
+            conn.execute("ALTER TABLE actions RENAME TO actions_v6")
+            conn.execute(ACTIONS_DDL)
+            conn.execute(f"INSERT INTO actions ({names}) SELECT {names} FROM actions_v6")
+            conn.execute("DROP TABLE actions_v6")
+            conn.execute("CREATE INDEX actions_by_app ON actions (application_id, state)")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS actions_by_email "
+            "ON actions (source_gmail_msg_id) WHERE source_gmail_msg_id IS NOT NULL"
+        )
 
 
 def _migrate_next_actions(conn) -> None:
@@ -829,7 +851,7 @@ def pending_actions(conn, *, now: datetime, include_snoozed: bool = True,
     """Open actions, plus snoozed ones. With include_snoozed=False, a snoozed
     action counts only once its snooze has run out."""
     tz = now.tzinfo if isinstance(now.tzinfo, ZoneInfo) else viewer_tz()
-    sql = """SELECT x.*, a.company, a.role, e.gmail_msg_id AS source_gmail_msg_id
+    sql = """SELECT x.*, a.company, a.role, COALESCE(x.source_gmail_msg_id, e.gmail_msg_id) AS email_source
              FROM actions x
              JOIN applications a ON a.id = x.application_id
              LEFT JOIN events e ON e.id = x.source_event_id
@@ -961,8 +983,8 @@ def today_snapshot(conn, today: date, now: datetime, tz: ZoneInfo) -> dict:
             "action_id": r["id"], "application_id": r["application_id"],
             "company": r["company"], "role": r["role"], "description": r["description"],
             "due": due, "overdue": x["overdue"], "origin": r["origin"], "reason": r["reason"],
-            "gmail_msg_id": r["source_gmail_msg_id"],
-            "gmail_url": gmail_url(r["source_gmail_msg_id"]),
+            "gmail_msg_id": r["email_source"],
+            "gmail_url": gmail_url(r["email_source"]),
         })
     suggestions = [{
         "application_id": x["app"]["id"], "company": x["app"]["company"],
@@ -1746,11 +1768,12 @@ def cmd_review_item(conn, a):
                         "Use --override-company with --note to record a deliberate correction."
                     )
             kind = proposal.get("kind")
-            if not isinstance(kind, str) or kind == "note" or kind not in EVENT_KINDS:
+            if not isinstance(kind, str) or kind == "note" or (kind not in EVENT_KINDS and kind != "request"):
                 sys.exit("error: invalid proposed event kind")
-            legal, reason = is_legal(derive(conn, app)["status"], kind)
-            if not legal:
-                sys.exit(f"error: {reason}")
+            if kind != "request":
+                legal, reason = is_legal(derive(conn, app)["status"], kind)
+                if not legal:
+                    sys.exit(f"error: {reason}")
             proposed_day = proposal.get("occurred_on")
             if not isinstance(proposed_day, str) or not proposed_day:
                 sys.exit("error: proposal has no event date")
@@ -1762,15 +1785,23 @@ def cmd_review_item(conn, a):
             evidence = proposal.get("evidence")
             if not raw or not isinstance(evidence, str) or not evidence_in_body(evidence, raw["body"]):
                 sys.exit("error: proposed evidence must appear in the source email")
-            try:
-                cursor = conn.execute(
-                    """INSERT INTO events (application_id, occurred_on, kind, evidence, gmail_msg_id)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (a.app_id, day, kind, evidence, row["gmail_msg_id"]),
-                )
-            except sqlite3.IntegrityError as exc:
-                sys.exit(f"error: could not approve review item: {exc}")
-            event_id = cursor.lastrowid
+            if "request" in proposal or kind == "request":
+                from classify import _field_types, write_request
+
+                if proposal.get("gmail_msg_id") != row["gmail_msg_id"] or _field_types(proposal):
+                    sys.exit("error: invalid request proposal")
+            if kind != "request":
+                try:
+                    cursor = conn.execute(
+                        """INSERT INTO events (application_id, occurred_on, kind, evidence, gmail_msg_id)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (a.app_id, day, kind, evidence, row["gmail_msg_id"]),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    sys.exit(f"error: could not approve review item: {exc}")
+                event_id = cursor.lastrowid
+            if "request" in proposal:
+                write_request(conn, a.app_id, proposal, event_id)
         conn.execute(
             """UPDATE review_queue SET resolved = 1, resolved_event_id = ?,
                resolved_note = ?, resolved_at = datetime('now') WHERE id = ?""",

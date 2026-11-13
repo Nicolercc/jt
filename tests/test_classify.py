@@ -361,7 +361,7 @@ def test_tool_schema_excludes_note_and_otherwise_matches_event_kinds():
     schema = classify.classification_tool_schema()
     enum = schema["input_schema"]["properties"]["proposals"]["items"]["properties"]["kind"]["enum"]
     assert "note" not in enum
-    assert set(enum) == set(jt.EVENT_KINDS) - {"note"}
+    assert set(enum) == (set(jt.EVENT_KINDS) - {"note"}) | {"request"}
     assert schema["name"] == classify.TOOL_NAME
 
 
@@ -1268,3 +1268,101 @@ def test_switch_only_accepts_exactly_1(monkeypatch, value):
     """Anything but "1" keeps the safe default, so a typo can't loosen it."""
     monkeypatch.setenv("CLASSIFIER_AUTO_COMMIT_TERMINAL", value)
     assert classify.auto_commit_consequential() is False
+
+
+@pytest.mark.parametrize("deadline,quote,expected", [
+    ("2026-09-03T17:00", "by Sep 3, 5:00 PM PT", "2026-09-04T00:00:00Z"),
+    ("2026-09-03T17:00", "fabricated", None),
+    ("2027-02-18", "by Sep 3, 5:00 PM PT", None),
+    ("", "", None),
+])
+def test_email_request_action(conn, deadline, quote, expected):
+    app_id = add_app(conn, "Ramp", "CX Agent")
+    body = "Please complete the assessment by Sep 3, 5:00 PM PT."
+    add_raw(conn, body=body)
+    p = proposal(company="Ramp", role_hint="CX Agent", kind="tech",
+                 evidence="complete the assessment")
+    p["request"] = dict(description="Complete Ramp assessment", due_text=quote,
+                        due_iso=deadline, due_tz="America/Los_Angeles")
+    # An assessment request can arrive before a screening stage.
+    p["kind"] = "screen"
+    messages = classify.load_unprocessed(conn, 10)
+    verdicts = classify.verdicts_for(conn, messages, json.dumps([p]))
+    for _ in range(2):
+        classify.apply_verdicts(conn, verdicts)
+    rows = conn.execute("SELECT * FROM actions").fetchall()
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row["application_id"], row["origin"], row["source_gmail_msg_id"]) == (app_id, "email", "m1")
+    assert row["due_at_utc"] == expected
+    if expected is None:
+        assert row["due_date"] == "2026-08-02"
+        if deadline:
+            assert row["reason"]
+    from datetime import datetime, date, timezone
+    now = datetime(2026, 9, 4, 1, tzinfo=timezone.utc)
+    assert jt.today_snapshot(conn, date(2026, 9, 4), now, jt.viewer_tz())["actions"][0]["gmail_url"] == jt.gmail_url("m1")
+
+
+def test_ambiguous_request_names_roles_without_action(conn):
+    add_app(conn, "Ramp", "CX Agent")
+    add_app(conn, "Ramp", "Support Lead")
+    add_raw(conn)
+    p = proposal(company="Ramp", role_hint="")
+    p["request"] = dict(description="Reply to Ramp", due_text="", due_iso="", due_tz="")
+    classify.apply_verdicts(conn, classify.verdicts_for(
+        conn, classify.load_unprocessed(conn, 10), json.dumps([p])))
+    assert conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
+    reason = conn.execute("SELECT reason FROM review_queue").fetchone()[0]
+    assert "CX Agent" in reason and "Support Lead" in reason
+
+
+# --- Request deadline edge cases (found in review) ----------------------------
+
+def _request_row(conn, body, request, received_on="2026-09-02", kind="request"):
+    add_app(conn, "Ramp", "CX Agent", applied_on="2026-08-28")
+    conn.execute(
+        "INSERT INTO raw_messages (gmail_msg_id, received_on, sender, subject, body) "
+        "VALUES ('r1', ?, 'x@ramp.com', 'Assessment', ?)", (received_on, body))
+    conn.commit()
+    p = proposal("r1", company="Ramp", role_hint="CX Agent", kind=kind,
+                 evidence="complete the Ramp assessment")
+    p["occurred_on"] = received_on
+    p["request"] = request
+    v = classify.verdicts_for(conn, classify.load_unprocessed(conn, 10), json.dumps([p]))
+    classify.apply_verdicts(conn, v)
+    return conn.execute("SELECT * FROM actions").fetchone(), p, v
+
+
+def test_deadline_quote_survives_line_wraps_in_the_email(conn):
+    """Real emails break lines mid-sentence (\\r\\n). The model quotes the deadline
+    on one line; an exact substring check silently dropped the real deadline."""
+    body = "Please complete the Ramp assessment by\r\nSep 3, 5:00 PM PT. Thanks"
+    row, _, _ = _request_row(conn, body, dict(
+        description="Complete Ramp assessment", due_text="by Sep 3, 5:00 PM PT",
+        due_iso="2026-09-03T17:00", due_tz="America/Los_Angeles"))
+    assert row["due_at_utc"] == "2026-09-04T00:00:00Z"
+    assert row["reason"] is None
+
+
+def test_deadline_before_the_email_arrived_is_rejected(conn):
+    body = "Please complete the Ramp assessment by Sep 3."
+    row, _, _ = _request_row(conn, body, dict(
+        description="Complete Ramp assessment", due_text="by Sep 3",
+        due_iso="2026-08-01", due_tz=""))
+    assert row["due_date"] == "2026-09-02"            # arrival-day fallback
+    assert "before the email arrived" in row["reason"]
+
+
+def test_replayed_request_email_is_still_marked_processed(conn):
+    """A replay must not leave the message unprocessed, or it is re-sent to the
+    model on every hourly run."""
+    body = "Please complete the Ramp assessment soon."
+    _, p, _ = _request_row(conn, body, dict(
+        description="Complete Ramp assessment", due_text="", due_iso="", due_tz=""))
+    conn.execute("UPDATE raw_messages SET processed = 0")
+    conn.commit()
+    v = classify.verdicts_for(conn, classify.load_unprocessed(conn, 10), json.dumps([p]))
+    classify.apply_verdicts(conn, v)
+    assert conn.execute("SELECT processed FROM raw_messages").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 1

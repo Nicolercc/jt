@@ -16,7 +16,8 @@ import sqlite3
 import sys
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
@@ -127,7 +128,8 @@ def classification_tool_schema() -> dict:
                             },
                             "kind": {
                                 "type": "string",
-                                "enum": allowed_kinds,
+                                "enum": [*allowed_kinds, "request"],
+                                "description": "Use request when there is no separate stage event.",
                             },
                             "occurred_on": {
                                 "type": "string",
@@ -138,6 +140,18 @@ def classification_tool_schema() -> dict:
                                 "type": "number",
                                 "minimum": 0.0,
                                 "maximum": 1.0,
+                            },
+                            "request": {
+                                "type": "object",
+                                "description": "Include only for a direct request to the applicant.",
+                                "properties": {
+                                    "description": {"type": "string", "maxLength": 60,
+                                                    "description": "Short imperative task."},
+                                    "due_text": {"type": "string", "description": "Verbatim deadline or empty."},
+                                    "due_iso": {"type": "string", "description": "YYYY-MM-DD, YYYY-MM-DDTHH:MM, or empty."},
+                                    "due_tz": {"type": "string", "description": "IANA time zone or empty."},
+                                },
+                                "required": ["description", "due_text", "due_iso", "due_tz"],
                             },
                             "evidence": {
                                 "type": "string",
@@ -488,6 +502,16 @@ def _field_types(p: dict[str, Any]) -> str:
         # as a confidence of 1.0 and clear any threshold.
         if not isinstance(p[key], typ) or isinstance(p[key], bool):
             return f"field {key!r} has wrong type"
+    request = p.get("request")
+    if "request" in p and (
+        not isinstance(request, dict)
+        or any(not isinstance(request.get(key), str)
+               for key in ("description", "due_text", "due_iso", "due_tz"))
+        or not 1 <= len(request["description"].strip()) <= 60
+    ):
+        return "invalid request fields"
+    if p["kind"] == "request" and request is None:
+        return "request kind requires request fields"
     return ""
 
 
@@ -541,18 +565,19 @@ def match_application(conn, company: str, role_hint: str) -> tuple[sqlite3.Row |
         return None, f"ambiguous company match for {company!r}"
 
     same_company = near_company
+    roles = ", ".join(dict.fromkeys(x[0]["role"] for x in same_company))
     if len(same_company) == 1:
         return same_company[0][0], ""
 
     if not role_hint.strip():
-        return None, f"ambiguous role at {same_company[0][0]['company']}; no role_hint"
+        return None, f"ambiguous role at {same_company[0][0]['company']}; no role_hint ({roles})"
     same_company.sort(key=lambda x: x[2], reverse=True)
     top_role = same_company[0][2]
     runner_role = same_company[1][2] if len(same_company) > 1 else -1.0
     if top_role < ROLE_MIN_SCORE:
-        return None, f"ambiguous role for {company!r}; role_hint did not match"
+        return None, f"ambiguous role for {company!r}; role_hint did not match ({roles})"
     if runner_role >= top_role - RUNNER_UP_GAP:
-        return None, f"ambiguous role for {company!r}; multiple roles matched"
+        return None, f"ambiguous role for {company!r}; multiple roles matched ({roles})"
     return same_company[0][0], ""
 
 
@@ -568,7 +593,7 @@ def validate_proposal(conn, p: dict[str, Any], messages_by_id: dict[str, sqlite3
         return Verdict(p["gmail_msg_id"], False, "proposal referenced an unknown gmail_msg_id", p)
     if p["kind"] == "note":
         return Verdict(p["gmail_msg_id"], False, "classifier may not write human note events", p)
-    if p["kind"] not in jt.EVENT_KINDS:
+    if p["kind"] != "request" and p["kind"] not in jt.EVENT_KINDS:
         return Verdict(p["gmail_msg_id"], False, f"unknown event kind {p['kind']!r}", p)
     date_reason = _date_reason(p["occurred_on"])
     if date_reason:
@@ -599,6 +624,8 @@ def validate_proposal(conn, p: dict[str, Any], messages_by_id: dict[str, sqlite3
             f"event date {p['occurred_on']} predates application date {app['applied_on']}", p)
 
     current = jt.derive(conn, app)["status"]
+    if p["kind"] == "request":
+        return Verdict(p["gmail_msg_id"], True, "", p, app["id"])
     ok, reason = transitions.is_legal(current, p["kind"])
     if not ok:
         return Verdict(p["gmail_msg_id"], False, reason, p)
@@ -678,9 +705,59 @@ def write_application_candidate(conn, verdict: Verdict) -> None:
     )
 
 
+def _request_deadline(request, body: str, received: date):
+    raw = request["due_iso"]
+    quote = request["due_text"]
+    if not raw:
+        return received.isoformat(), None, None, None
+    # Whitespace-tolerant, like evidence quotes: real emails wrap lines (\r\n)
+    # mid-sentence, and the model quotes the deadline on one line.
+    if not quote.strip() or not jt.evidence_in_body(quote, body):
+        return received.isoformat(), None, None, "deadline quote not found in email"
+    try:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?", raw):
+            raise ValueError
+        wall = datetime.fromisoformat(raw)
+        if wall.date() < received:
+            return received.isoformat(), None, None, "deadline before the email arrived"
+        if wall.date() > received + timedelta(days=120):
+            raise ValueError
+        if "T" not in raw:
+            return raw, None, None, None
+        tz = ZoneInfo(request["due_tz"]) if request["due_tz"] else jt.viewer_tz()
+        instant = wall.replace(tzinfo=tz).astimezone(timezone.utc)
+        if instant.astimezone(tz).replace(tzinfo=None) != wall:
+            raise ValueError
+        reason = None if request["due_tz"] else "time zone assumed"
+        return None, jt._utc_iso(instant), tz.key, reason
+    except (ValueError, ZoneInfoNotFoundError):
+        return received.isoformat(), None, None, "invalid deadline or outside 120-day window"
+
+
+def write_request(conn, app_id: int, proposal: dict[str, Any], event_id: int | None) -> None:
+    request = proposal.get("request")
+    if request is None:
+        return
+    raw = conn.execute("SELECT received_on, body FROM raw_messages WHERE gmail_msg_id = ?",
+                       (proposal["gmail_msg_id"],)).fetchone()
+    received = date.fromisoformat(raw["received_on"] or proposal["occurred_on"])
+    day, utc, tz, reason = _request_deadline(request, raw["body"] or "", received)
+    conn.execute(
+        """INSERT OR IGNORE INTO actions
+           (application_id, description, due_date, due_at_utc, due_tz, reason,
+            origin, source_event_id, source_gmail_msg_id)
+           VALUES (?, ?, ?, ?, ?, ?, 'email', ?, ?)""",
+        (app_id, request["description"].strip(), day, utc, tz, reason,
+         event_id, proposal["gmail_msg_id"]),
+    )
+
+
 def commit_verdict(conn, verdict: Verdict) -> str:
     assert verdict.proposal is not None and verdict.application_id is not None
     p = verdict.proposal
+    if p["kind"] == "request":
+        write_request(conn, verdict.application_id, p, None)
+        return ""
     try:
         cur = conn.execute(
             """INSERT OR IGNORE INTO events
@@ -693,6 +770,7 @@ def commit_verdict(conn, verdict: Verdict) -> str:
         return f"database rejected event: {e}"
     if cur.rowcount == 0:
         return "duplicate gmail_msg_id already exists in events; no event inserted"
+    write_request(conn, verdict.application_id, p, cur.lastrowid)
     return ""
 
 
@@ -708,6 +786,8 @@ def recheck_transition(conn, verdict: Verdict) -> str:
     assert verdict.proposal is not None and verdict.application_id is not None
     app = conn.execute(
         "SELECT * FROM applications WHERE id = ?", (verdict.application_id,)).fetchone()
+    if verdict.proposal["kind"] == "request":
+        return ""
     current = jt.derive(conn, app)["status"]
     ok, reason = transitions.is_legal(current, verdict.proposal["kind"])
     return "" if ok else f"{reason} (after an earlier proposal in the same batch)"
@@ -727,6 +807,10 @@ def apply_verdicts(conn, verdicts: list[Verdict]) -> tuple[int, int]:
 def _apply_verdicts_locked(conn, verdicts: list[Verdict]) -> tuple[int, int]:
     committed = reviewed = 0
     for verdict in verdicts:
+        # Replays are deduplicated by the UNIQUE index on
+        # actions.source_gmail_msg_id (INSERT OR IGNORE in write_request); an
+        # early `continue` here used to skip marking the message processed, so
+        # it was re-sent to the model on every run.
         if verdict.ok:
             reason = recheck_transition(conn, verdict) or commit_verdict(conn, verdict)
             if reason:
