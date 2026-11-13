@@ -1706,6 +1706,15 @@ def cmd_review_item(conn, a):
                 "SELECT subject, received_on FROM raw_messages WHERE gmail_msg_id = ?",
                 (row["gmail_msg_id"],),
             ).fetchone()
+            if getattr(a, "json", False):
+                return _print_ok(
+                    review_id=row["id"], resolved=bool(row["resolved"]),
+                    event_id=row["resolved_event_id"], reason=row["reason"],
+                    gmail_msg_id=row["gmail_msg_id"],
+                    subject=msg["subject"] if msg else None,
+                    received_on=msg["received_on"] if msg else None,
+                    proposal=json.loads(row["proposed_json"]),
+                )
             print(f"#{row['id']} {'resolved' if row['resolved'] else 'pending'}: {row['reason']}")
             if msg:
                 print(f"{msg['received_on'] or '-'}  {msg['subject'] or '-'}")
@@ -1989,7 +1998,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--failure-threshold", type=int, default=None)
     s.add_argument("--log")
     s.add_argument("--no-fail", action="store_true")
-    s.add_argument("--json", action="store_true", help="approve/dismiss: print a JSON result")
+    s.add_argument("--json", action="store_true", help="show, approve, or dismiss: print a JSON result")
     s.set_defaults(fn=cmd_review)
 
     s = sub.add_parser("resolve", help="mark a review item handled")

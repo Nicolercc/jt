@@ -917,3 +917,30 @@ def test_review_approval_still_rejects_quote_not_in_email(conn):
     with pytest.raises(SystemExit, match="must appear in the source email"):
         jt.cmd_review(conn, jt.build_parser().parse_args(["review", "approve", "1", "--app-id", str(app["id"])]))
     assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+
+
+def test_review_show_json_reports_pending_and_resolved_item(conn, capsys):
+    import json
+
+    proposal = {"kind": "screen", "evidence": "schedule a call"}
+    with conn:
+        conn.execute("INSERT INTO raw_messages (gmail_msg_id, subject) VALUES ('test', 'Next steps')")
+        conn.execute(
+            "INSERT INTO review_queue (gmail_msg_id, proposed_json, reason) VALUES ('test', ?, 'ambiguous')",
+            (json.dumps(proposal),),
+        )
+    show = ["review", "show", "1", "--json"]
+    jt.main_args(show)
+    pending = json.loads(capsys.readouterr().out)
+    assert pending["review_id"] == 1
+    assert pending["subject"] == "Next steps"
+    assert pending["gmail_msg_id"] == "test"
+    assert pending["proposal"] == proposal
+    assert pending["resolved"] is False
+
+    jt.main_args(["review", "dismiss", "1"])
+    capsys.readouterr()
+    jt.main_args(show)
+    resolved = json.loads(capsys.readouterr().out)
+    assert resolved["resolved"] is True
+    assert resolved["event_id"] is None
