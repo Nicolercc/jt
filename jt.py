@@ -95,7 +95,7 @@ def evidence_in_body(evidence: str, body: str | None) -> bool:
     needle = normalize_for_match(evidence)
     return bool(needle) and needle in normalize_for_match(body or "")
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8   # v7: actions.source_gmail_msg_id; v8: suggestion_dismissals
 
 # --------------------------------------------------------------------------
 # Domain vocabulary. You own this. Changing it is a schema-level decision.

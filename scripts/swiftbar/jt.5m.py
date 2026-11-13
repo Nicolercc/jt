@@ -259,7 +259,9 @@ def handle_click(argv: list[str]) -> int:
     if cmd == "open":
         return subprocess.run(["open", rest[0]]).returncode
     if cmd == "quit":
-        return subprocess.run(["osascript", "-e", 'tell application "SwiftBar" to quit']).returncode
+        # No AppleScript: it needs the "control another app" permission. A plain
+        # quit signal needs none. This quits SwiftBar, which hosts the panel.
+        return subprocess.run(["killall", "SwiftBar"]).returncode
     if cmd == "done":
         args = ["action", "done", rest[0]]
     elif cmd == "snooze":
@@ -286,7 +288,7 @@ def handle_click(argv: list[str]) -> int:
         if ok:
             snapshot.pop("failure", None)
         else:
-            row = next((a for a in snapshot["actions"] if str(a["action_id"]) == rest[0]), {})
+            row: dict = next((a for a in snapshot["actions"] if str(a["action_id"]) == rest[0]), {})
             label = clean(row.get("description") or "this task")
             message = (f"Couldn't mark '{label}' done. Try again" if cmd == "done" else
                        f"Couldn't complete the {cmd} request. Try again")

@@ -41,7 +41,7 @@ testpaths = ["tests"]
 
 [tool.mypy]
 python_version = "3.11"
-files = ["jt.py", "transitions.py", "sync.py", "classify.py", "jt_eval.py", "evals"]
+files = ["jt.py", "transitions.py", "sync.py", "classify.py", "jt_eval.py", "evals", "scripts/swiftbar/jt.5m.py"]
 ignore_missing_imports = true
 warn_unused_ignores = true
 warn_redundant_casts = true

@@ -228,3 +228,14 @@ def test_timed_action_formats_role_and_day(plugin):
     action["due"] = {"kind": "time", "value": "2026-08-05T15:00:00Z"}
     assert any("Acme · Engineer · Today 3 PM" in row
                for row in plugin.render(snap(actions=[action]), None, NOW))
+
+
+def test_quit_does_not_use_applescript(plugin, monkeypatch):
+    """AppleScript needs the 'control another app' permission, which users
+    reasonably decline; Quit must work without it."""
+    calls = []
+    monkeypatch.setattr(plugin.subprocess, "run",
+                        lambda args, **k: calls.append(args) or type("R", (), {"returncode": 0})())
+    assert plugin.handle_click(["quit"]) == 0
+    assert calls and calls[0][0] != "osascript"
+    assert "osascript" not in PLUGIN.read_text()
