@@ -723,10 +723,20 @@ ACTION_CLOSED = ("done", "dismissed")
 
 
 def viewer_tz() -> ZoneInfo:
-    """The zone dates are shown in: $JT_TZ, else $TZ, else this Mac's zone."""
-    for name in (os.environ.get("JT_TZ"), os.environ.get("TZ")):
-        if name:
-            return _zone(name)
+    """The zone dates are shown in: $JT_TZ, else $TZ, else this Mac's zone.
+
+    $JT_TZ is jt's own setting, so a bad value is a clear error. $TZ belongs
+    to the OS and may hold POSIX forms that aren't IANA names (":/etc/localtime",
+    "EST5EDT"); those are skipped rather than crashing every command.
+    """
+    if os.environ.get("JT_TZ"):
+        return _zone(os.environ["JT_TZ"])
+    posix = (os.environ.get("TZ") or "").removeprefix(":")
+    if posix and not posix.startswith("/"):
+        try:
+            return ZoneInfo(posix)
+        except (ZoneInfoNotFoundError, ValueError):
+            pass
     try:
         link = os.path.realpath("/etc/localtime")
         if "zoneinfo/" in link:

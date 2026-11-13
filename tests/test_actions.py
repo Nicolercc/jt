@@ -239,3 +239,27 @@ def test_cli_snooze_requires_until(conn, capsys):
     run(["action", "add", str(a), "x", "--due", "2026-08-05"], capsys)
     with pytest.raises(SystemExit):
         jt.main_args(["action", "snooze", "1"])
+
+
+# ---------------------------------------------------------------- viewer zone
+
+@pytest.mark.parametrize("tz_env", [":/etc/localtime", "EST5EDT", "garbage", "", "UTC0"])
+def test_unusual_TZ_never_crashes_jt(monkeypatch, tz_env):
+    """$TZ is a POSIX setting, not jt config. Values like ':/etc/localtime'
+    are valid for the OS but are not IANA names; jt must fall back, not exit."""
+    monkeypatch.delenv("JT_TZ", raising=False)
+    monkeypatch.setenv("TZ", tz_env)
+    assert isinstance(jt.viewer_tz(), ZoneInfo)
+
+
+def test_TZ_with_leading_colon_iana_name_is_honored(monkeypatch):
+    monkeypatch.delenv("JT_TZ", raising=False)
+    monkeypatch.setenv("TZ", ":America/Los_Angeles")
+    assert jt.viewer_tz().key == "America/Los_Angeles"
+
+
+def test_bad_JT_TZ_is_still_a_clear_error(monkeypatch):
+    """JT_TZ is jt's own setting, so a typo there should be reported."""
+    monkeypatch.setenv("JT_TZ", "Mars/Olympus")
+    with pytest.raises(SystemExit, match="time zone"):
+        jt.viewer_tz()
