@@ -330,3 +330,31 @@ def test_failed_approve_shows_the_reason_and_expires(plugin, monkeypatch):
     cached = plugin.read_cache()
     assert "illegal transition" in cached["failure"]["message"]
     assert cached["failure"]["ts"]
+
+
+
+def test_close_out_suggestion_offers_close_choices_and_keep_open(plugin, monkeypatch):
+    s = snap(suggestions=[{"application_id": 9, "company": "Ramp", "role": "CX Agent",
+                           "kind": "CLOSE OUT", "reason": "55 business days with no reply",
+                           "close_choices": [{"label": "Mark as no response", "kind": "ghosted"},
+                                             {"label": "I withdrew", "kind": "withdrawn"}]}])
+    lines = plugin.render(s, None, NOW)
+    assert any(x.startswith("Close out?: Ramp") for x in lines)
+    close = next(x for x in lines if x.startswith("--Mark as no response"))
+    assert 'param1=close param2="9" param3="ghosted"' in close
+    assert any(x.startswith("--Keep it open") for x in lines)
+    assert not any(x.startswith("--Remind me tomorrow") for x in lines)
+    calls = []
+    class R:
+        returncode, stdout, stderr = 0, json.dumps({"ok": True}), ""
+    monkeypatch.setattr(plugin, "jt", lambda *a, **k: calls.append(a) or R())
+    assert plugin.handle_click(["close", "9", "ghosted"]) == 0
+    assert calls[0] == ("log", "9", "ghosted", "--note", "closed from the menu bar", "--json")
+
+
+def test_more_suggestions_than_shown_are_counted(plugin):
+    sug = [{"application_id": i, "company": f"Co{i}", "role": "R", "kind": "CLOSE OUT",
+            "reason": "50 business days with no reply", "close_choices": []} for i in range(10)]
+    lines = plugin.render(snap(suggestions=sug), None, NOW)
+    assert sum(1 for x in lines if x.startswith("Close out?")) == 3
+    assert any(x.startswith("+7 more to close out") for x in lines)

@@ -132,6 +132,10 @@ EVENT_KINDS = tuple(k for k in STAGE_RANK if k != "applied") + TERMINAL + TOUCH
 # Follow-up policy. One nudge, then let it go.
 FOLLOWUP_AFTER_BUSINESS_DAYS = 6
 CLOSEOUT_AFTER_BUSINESS_DAYS = 15
+# PRD R11: past this, a never-followed-up application is a "close out?"
+# question, not a daily "follow up" nag (real case: 50-55 days quiet).
+STALE_AFTER_BUSINESS_DAYS = 30
+CLOSE_CHOICES = (("ghosted", "Mark as no response"), ("withdrawn", "I withdrew"))
 
 # Scoring weights for `jt priority`. Tune these without reading the scorer.
 WEIGHTS = {
@@ -606,6 +610,8 @@ def action_for(d: dict) -> str:
     """The only opinion this tool holds: what to do about this one today."""
     if d["is_terminal"]:
         return "-"
+    if d["followups"] == 0 and d["bdays_quiet"] >= STALE_AFTER_BUSINESS_DAYS:
+        return "CLOSE OUT"
     if d["followups"] == 0 and d["bdays_quiet"] >= FOLLOWUP_AFTER_BUSINESS_DAYS:
         return "FOLLOW UP"
     if d["followups"] >= 1 and d["bdays_quiet"] >= CLOSEOUT_AFTER_BUSINESS_DAYS:
@@ -1007,7 +1013,17 @@ def gmail_url(msg_id: str | None) -> str | None:
 def _suggestion_reason(kind: str, d: dict) -> str:
     if kind == "FOLLOW UP":
         return f"{d['bdays_quiet']} business days quiet, no follow-up sent"
-    return f"{d['bdays_quiet']} business days quiet after {d['followups']} follow-up(s)"
+    if d["followups"] == 0:
+        return f"{d['bdays_quiet']} business days with no reply. Still in play?"
+    return f"{d['bdays_quiet']} business days with no reply after {d['followups']} follow-up(s)"
+
+
+def _close_choices(kind: str, d: dict) -> list[dict]:
+    """Only closes transitions.py allows from the current stage."""
+    if kind != "CLOSE OUT":
+        return []
+    return [{"kind": k, "label": label} for k, label in CLOSE_CHOICES
+            if is_legal(d["status"], k)[0]]
 
 
 def today_snapshot(conn, today: date, now: datetime, tz: ZoneInfo) -> dict:
@@ -1028,6 +1044,7 @@ def today_snapshot(conn, today: date, now: datetime, tz: ZoneInfo) -> dict:
         "application_id": x["app"]["id"], "company": x["app"]["company"],
         "role": x["app"]["role"], "kind": x["kind"],
         "reason": _suggestion_reason(x["kind"], x["state"]),
+        "close_choices": _close_choices(x["kind"], x["state"]),
     } for x in entries["suggestions"]]
     now_utc = now.astimezone(timezone.utc).replace(tzinfo=None)
     stats = review_queue_stats(conn, now_utc)
@@ -1392,6 +1409,8 @@ def cmd_log(conn, a):
     with write_txn(conn):
         app = _log_event_locked(conn, a)
     d = derive(conn, app)
+    if getattr(a, "json", False):
+        return _print_ok(application_id=a.id, status=d["status"])
     print(f"#{a.id} {app['company']} - {app['role']}  ->  {d['status']}")
 
 
@@ -2104,6 +2123,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--on"); s.add_argument("--note")
     s.add_argument("--force", action="store_true",
                     help="log even if illegal per transitions.py (deliberate manual correction)")
+    s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_log)
 
     s = sub.add_parser("show", help="full history for one application")
