@@ -549,7 +549,42 @@ def _app_score(app, company: str, role_hint: str) -> tuple[float, float]:
     return _ratio(company, app["company"]), _role_score(role_hint or "", app["role"])
 
 
-def match_application(conn, company: str, role_hint: str) -> tuple[sqlite3.Row | None, str]:
+# E1 (PRD): kinds that continue an application's process. Only these may have
+# their role inferred; a confirmation or rejection could belong to either role.
+PROGRESS_KINDS = frozenset({"request", "response", "screen", "tech", "onsite", "final", "offer"})
+
+
+def _infer_active_role(conn, candidates: list, kind: str | None) -> tuple[sqlite3.Row | None, str]:
+    """Pick one same-company application from evidence, or none. Never a guess:
+    1. closed (terminal) applications can't continue, so they're not candidates;
+    2. of the open ones, exactly one may have progressed past "confirmed"."""
+    if kind not in PROGRESS_KINDS:
+        return None, ""
+    states = [(app, jt.derive(conn, app)) for app in candidates]
+    open_apps = [(app, d) for app, d in states if not d["is_terminal"]]
+    company = candidates[0]["company"]
+    if len(open_apps) == 1:
+        return open_apps[0][0], f"role inferred: the only open application at {company}"
+    active = [app for app, d in open_apps if d["stage_rank"] >= jt.STAGE_RANK["response"]]
+    if len(active) == 1:
+        return active[0], f"role inferred: the only application at {company} with an active process"
+    return None, ""
+
+
+def match_application(conn, company: str, role_hint: str, kind: str | None = None,
+                      notes: list[str] | None = None) -> tuple[sqlite3.Row | None, str]:
+    """Match a proposal to one application. When several roles at the same
+    company fit and the email doesn't settle it, `_infer_active_role` may
+    resolve it from evidence for progress kinds; the inference is appended to
+    `notes` so it can be shown to the user."""
+    def inferred(fallback_reason: str) -> tuple[sqlite3.Row | None, str]:
+        app, note = _infer_active_role(conn, [x[0] for x in same_company], kind)
+        if app is None:
+            return None, fallback_reason
+        if notes is not None:
+            notes.append(note)
+        return app, ""
+
     apps = conn.execute("SELECT * FROM applications ORDER BY id").fetchall()
     if not apps:
         return None, "no applications exist to match against"
@@ -570,14 +605,14 @@ def match_application(conn, company: str, role_hint: str) -> tuple[sqlite3.Row |
         return same_company[0][0], ""
 
     if not role_hint.strip():
-        return None, f"ambiguous role at {same_company[0][0]['company']}; no role_hint ({roles})"
+        return inferred(f"ambiguous role at {same_company[0][0]['company']}; no role_hint ({roles})")
     same_company.sort(key=lambda x: x[2], reverse=True)
     top_role = same_company[0][2]
     runner_role = same_company[1][2] if len(same_company) > 1 else -1.0
     if top_role < ROLE_MIN_SCORE:
         return None, f"ambiguous role for {company!r}; role_hint did not match ({roles})"
     if runner_role >= top_role - RUNNER_UP_GAP:
-        return None, f"ambiguous role for {company!r}; multiple roles matched ({roles})"
+        return inferred(f"ambiguous role for {company!r}; multiple roles matched ({roles})")
     return same_company[0][0], ""
 
 
@@ -629,7 +664,10 @@ def validate_proposal(conn, p: dict[str, Any], messages_by_id: dict[str, sqlite3
         # The whole quote is verbatim, so its leading words are too.
         p = {**p, "evidence": " ".join(evidence.split()[:MAX_EVIDENCE_WORDS])}
 
-    app, reason = match_application(conn, p["company"], p["role_hint"])
+    notes: list[str] = []
+    app, reason = match_application(conn, p["company"], p["role_hint"], p["kind"], notes)
+    if notes:
+        p = {**p, "role_inference": notes[0]}
     if reason or app is None:
         return Verdict(p["gmail_msg_id"], False, reason or "no matching application", p)
     if p["occurred_on"] < app["applied_on"]:
@@ -756,6 +794,9 @@ def write_request(conn, app_id: int, proposal: dict[str, Any], event_id: int | N
                        (proposal["gmail_msg_id"],)).fetchone()
     received = date.fromisoformat(raw["received_on"] or proposal["occurred_on"])
     day, utc, tz, reason = _request_deadline(request, raw["body"] or "", received)
+    inference = proposal.get("role_inference")
+    if inference:
+        reason = f"{inference}; {reason}" if reason else inference
     conn.execute(
         """INSERT OR IGNORE INTO actions
            (application_id, description, due_date, due_at_utc, due_tz, reason,
