@@ -6,7 +6,8 @@ from evals.run import load_fixtures, run_eval
 
 def test_eval_harness_runs_against_redacted_example():
     fixtures = load_fixtures(__import__("pathlib").Path("evals/fixtures.example.jsonl"))
-    report = run_eval(fixtures, use_expected=True)
+    # Harness self-test: pin the pre-D3 policy so every expected commit can land.
+    report = run_eval(fixtures, use_expected=True, auto_commit_consequential=True)
 
     assert report["fixtures"] == 8
     assert report["misclassifications_reached_events"] == 0
@@ -112,3 +113,36 @@ def test_run_eval_report_includes_m1_metrics():
                 "review_rate", "precision_ci", "recall_ci"):
         assert key in report
     assert report["wrong_terminal_commits"] == 0
+
+
+
+# ---------------------------------------------------------------- D3 compare
+
+def test_eval_compares_both_policies_from_one_model_response():
+    """Same model output, two policies: the before/after for D3 without
+    paying for (or varying) a second model call."""
+    fixtures = load_fixtures(__import__("pathlib").Path("evals/fixtures.example.jsonl"))
+    auto = run_eval(fixtures, use_expected=True, auto_commit_consequential=True)
+    review = run_eval(fixtures, use_expected=True, auto_commit_consequential=False,
+                      raw_response=auto["raw_response"])
+    assert auto["raw_response"] == review["raw_response"]
+    assert review["held_for_confirmation"] >= 1
+    assert review["actual_commits"] == auto["actual_commits"] - review["held_for_confirmation"]
+    assert review["wrong_terminal_commits"] == 0
+
+
+def test_eval_policy_flag_does_not_leak_into_the_environment(monkeypatch):
+    monkeypatch.delenv("CLASSIFIER_AUTO_COMMIT_TERMINAL", raising=False)
+    fixtures = load_fixtures(__import__("pathlib").Path("evals/fixtures.example.jsonl"))
+    run_eval(fixtures, use_expected=True, auto_commit_consequential=True)
+    import os
+    assert "CLASSIFIER_AUTO_COMMIT_TERMINAL" not in os.environ
+
+
+
+def test_report_names_the_policy_that_actually_ran(monkeypatch):
+    monkeypatch.setenv("CLASSIFIER_AUTO_COMMIT_TERMINAL", "1")
+    fixtures = load_fixtures(__import__("pathlib").Path("evals/fixtures.example.jsonl"))
+    assert run_eval(fixtures, use_expected=True,
+                    auto_commit_consequential=False)["policy"] == "review consequential kinds"
+    assert run_eval(fixtures, use_expected=True)["policy"] == "auto-commit consequential kinds"

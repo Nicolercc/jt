@@ -158,16 +158,36 @@ def expected_response(fixtures: list[dict]) -> str:
     return json.dumps(proposals)
 
 
-def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None) -> dict:
+POLICY_ENV = "CLASSIFIER_AUTO_COMMIT_TERMINAL"
+
+
+def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None,
+             auto_commit_consequential: bool | None = None,
+             raw_response: str | None = None) -> dict:
+    """Score one classifier run against the labels.
+
+    auto_commit_consequential: None uses the environment (the product
+    default); True/False pins the DESIGN D3 policy for this run only.
+    raw_response: reuse an earlier run's model output, so two policies can be
+    compared on identical proposals with one model call.
+    """
     with tempfile.TemporaryDirectory() as d:
         old = os.environ.get("JT_DB")
+        old_policy = os.environ.get(POLICY_ENV)
         os.environ["JT_DB"] = str(Path(d) / "eval.db")
+        if auto_commit_consequential is not None:
+            os.environ[POLICY_ENV] = "1" if auto_commit_consequential else "0"
         try:
+            policy_auto = classify.auto_commit_consequential()
             conn = jt.connect()
             seed_db(conn, fixtures)
             messages = classify.load_unprocessed(conn, len(fixtures))
-            raw = expected_response(fixtures) if use_expected else classify.call_model(
-                client or classify.build_classifier_client(), messages)
+            if raw_response is not None:
+                raw = raw_response
+            elif use_expected:
+                raw = expected_response(fixtures)
+            else:
+                raw = classify.call_model(client or classify.build_classifier_client(), messages)
             verdicts = classify.verdicts_for(conn, messages, raw)
             classify.apply_verdicts(conn, verdicts)
             actual_rows = conn.execute("""SELECT e.gmail_msg_id, e.kind, a.company, a.role
@@ -178,6 +198,10 @@ def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None) -
         finally:
             if "conn" in locals():
                 conn.close()
+            if old_policy is None:
+                os.environ.pop(POLICY_ENV, None)
+            else:
+                os.environ[POLICY_ENV] = old_policy
             if old is None:
                 os.environ.pop("JT_DB", None)
             else:
@@ -220,6 +244,11 @@ def run_eval(fixtures: list[dict], *, use_expected: bool = False, client=None) -
             for msg_id in sorted(false_commits | missed_commits)
         ],
         "review_reasons": review_reasons,
+        "raw_response": raw,
+        "policy": "auto-commit consequential kinds" if policy_auto
+                  else "review consequential kinds",
+        "held_for_confirmation": sum(
+            1 for r in review_reasons.values() if r.startswith(classify.CONFIRMATION_REASON)),
     }
 
 
@@ -239,6 +268,8 @@ def print_report(report: dict, label: str = "all") -> None:
     print(f"queued for review: {report['reviewed']}")
     print(f"application candidates: {report['application_candidates']}")
     print(f"review rate: {report['review_rate']:.1%}")
+    print(f"policy: {report['policy']}; held for your confirmation: "
+          f"{report['held_for_confirmation']}")
     print()
     print(f"{'kind':<12}{'n':>5}{'correct':>9}{'wrong':>7}{'review':>8}{'missed':>8}")
     for kind, k in report["per_kind"].items():
@@ -266,6 +297,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--set", dest="which", choices=("all", "dev", "holdout"), default="all",
                    help="score only one side of the frozen split (needs --split file)")
     p.add_argument("--split", type=Path, default=dataset.DEFAULT_SPLIT)
+    p.add_argument("--policy", choices=("default", "review", "auto", "compare"), default="default",
+                   help="DESIGN D3: review or auto-commit consequential kinds; compare runs "
+                        "both on one model response")
     return p
 
 
@@ -286,7 +320,21 @@ def main() -> None:
     if args.which == "holdout":
         print("HOLDOUT: report these numbers. Do not change prompts or thresholds "
               "because of them.\n")
-    print_report(run_eval(fixtures, use_expected=args.use_expected), args.which)
+    if args.policy == "compare":
+        before = run_eval(fixtures, use_expected=args.use_expected, auto_commit_consequential=True)
+        after = run_eval(fixtures, use_expected=args.use_expected,
+                         auto_commit_consequential=False, raw_response=before["raw_response"])
+        print("=== BEFORE D3: consequential kinds auto-commit ===")
+        print_report(before, args.which)
+        print("\n=== AFTER D3: consequential kinds go to review (same model output) ===")
+        print_report(after, args.which)
+        print(f"\nD3 effect: wrong terminal commits {before['wrong_terminal_commits']} -> "
+              f"{after['wrong_terminal_commits']}; extra reviews "
+              f"{after['held_for_confirmation']} of {after['n']} emails")
+        return
+    pinned = {"auto": True, "review": False}.get(args.policy)
+    print_report(run_eval(fixtures, use_expected=args.use_expected,
+                          auto_commit_consequential=pinned), args.which)
 
 
 if __name__ == "__main__":
