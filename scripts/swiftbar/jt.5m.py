@@ -241,6 +241,15 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
         lines.append("---")
         lines.append("Suggestions | size=12")
         for s in snap["suggestions"][:MAX_ACTIONS]:
+            if s["kind"] == "CLOSE OUT":
+                lines.append(f"Close out?: {clean(s['company'], 30)} · {clean(s.get('role'), 30)} | size=13 refresh=true")
+                lines.append(f"--{clean(s['reason'], 70)} | color=gray")
+                if not cached:
+                    app_id = str(s["application_id"])
+                    for c in s.get("close_choices") or []:
+                        lines.append(f"--{clean(c['label'], 40)} | " + action("close", app_id, c["kind"]))
+                    lines.append("--Keep it open (hide 14 days) | " + action("dismiss-suggestion", app_id, s["kind"]))
+                continue
             lines.append(f"{clean(s['kind'].title(), 12)}: {clean(s['company'], 30)} · {clean(s.get('role'), 30)} · optional | size=13 refresh=true")
             lines.append(f"--{clean(s['reason'], 70)} | color=gray")
             if not cached:
@@ -248,6 +257,10 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
                 lines.append("--Remind me tomorrow | " + action(
                     "remind", app_id, s["kind"], (now.date() + timedelta(days=1)).isoformat()))
                 lines.append("--Dismiss | " + action("dismiss-suggestion", app_id, s["kind"]))
+
+        extra = len(snap["suggestions"]) - MAX_ACTIONS
+        if extra > 0:
+            lines.append(f"+{extra} more to close out or follow up (jt stale) | color=gray")
 
     lines.append("---")
     lines.append(f"Gmail synced {ago(fresh['gmail_synced_at'], now)} · "
@@ -320,6 +333,8 @@ def handle_click(argv: list[str]) -> int:
                 "--reason", "Scheduled from SwiftBar suggestion"]
     elif cmd == "dismiss-suggestion":
         args = ["action", cmd, *rest]
+    elif cmd == "close":
+        args = ["log", rest[0], rest[1], "--note", "closed from the menu bar"]
     elif cmd == "approve":
         args = ["review", "approve", rest[0], "--app-id", rest[1]]
     elif cmd == "dismiss-review":
