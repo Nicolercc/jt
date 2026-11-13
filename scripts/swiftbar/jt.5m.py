@@ -5,7 +5,6 @@
 # <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
 # <swiftbar.hideLastUpdated>true</swiftbar.hideLastUpdated>
 # <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
-# <swiftbar.hideSwiftBar>true</swiftbar.hideSwiftBar>
 """
 jt menu-bar panel for SwiftBar: the M5 test-week prototype (docs/DESIGN.md).
 
@@ -25,6 +24,8 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import tempfile
 import subprocess
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -34,6 +35,7 @@ HOME = Path.home()
 JT_PYTHON = os.environ.get("JT_PYTHON", str(HOME / "Developer/jt/.venv/bin/python"))
 JT_REPO = os.environ.get("JT_REPO", str(HOME / "Developer/jt"))
 USAGE_LOG = Path(os.environ.get("JT_USAGE_LOG", str(HOME / ".jobtrack/usage.log")))
+CACHE = Path(os.environ.get("JT_PANEL_CACHE", str(HOME / ".jobtrack/panel-cache.json")))
 MAX_ACTIONS = 3
 SNOOZE_HOUR = "09:00"
 SELF = str(Path(__file__).resolve())
@@ -97,15 +99,57 @@ def ago(iso: str | None, now: datetime) -> str:
     return f"{mins // 1440} days ago"
 
 
-def due_label(due: dict) -> str:
-    if due["kind"] == "date":
-        d = date.fromisoformat(due["value"])
-        today = date.today()
-        if d == today:
-            return "today"
-        return d.strftime("%b %-d")
-    when = datetime.strptime(due["value"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    return when.astimezone().strftime("%-I:%M %p")
+def due_label(due: dict, now: datetime | None = None) -> str:
+    local = now or datetime.now().astimezone()
+    timed = due["kind"] != "date"
+    when = datetime.fromisoformat(due["value"].replace("Z", "+00:00"))
+    if timed:
+        when = when.astimezone(local.tzinfo)
+    offset = (when.date() - local.date()).days
+    day = "Today" if offset == 0 else when.strftime("%a" if 0 < offset < 7 else "%b %-d")
+    return f"{day} {when.strftime('%-I:%M %p').replace(':00 ', ' ')}" if timed else day
+
+
+def read_cache() -> dict | None:
+    try:
+        value = json.loads(CACHE.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) and value.get("schema_version") == 1 else None
+    except (OSError, ValueError):
+        return None
+
+
+def save_cache(snapshot: dict) -> None:
+    temp = None
+    try:
+        CACHE.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=CACHE.parent, delete=False, mode="w", encoding="utf-8") as out:
+            temp = Path(out.name)
+            json.dump(snapshot, out)
+        temp.replace(CACHE)
+    except OSError:
+        pass
+    finally:
+        if temp is not None:
+            temp.unlink(missing_ok=True)
+
+
+def launch_review() -> int:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".command", delete=False, encoding="utf-8") as out:
+        path = Path(out.name)
+        out.write("#!/bin/sh\nrm -f -- " + shlex.quote(str(path)) + "\nexec " +
+                  shlex.join([JT_PYTHON, str(Path(JT_REPO) / "jt.py"), "review"]) + "\n")
+    try:
+        path.chmod(0o700)
+        result = subprocess.run(["open", "-a", "Terminal", str(path)])
+        if result.returncode == 0:
+            return 0
+        return result.returncode
+    except OSError:
+        path.unlink(missing_ok=True)
+        return 1
+    finally:
+        if 'result' in locals() and result.returncode != 0:
+            path.unlink(missing_ok=True)
 
 
 SYNC_PROBLEMS = {
@@ -116,17 +160,19 @@ SYNC_PROBLEMS = {
 
 
 def action(cmd: str, *params: str, refresh: bool = True) -> str:
-    parts = [f"bash={SELF}", f"param1={cmd}"]
+    parts = [f'bash="{SELF}"', f"param1={cmd}"]
     parts += [f'param{i}="{p}"' for i, p in enumerate(params, 2)]
     parts += ["terminal=false", f"refresh={'true' if refresh else 'false'}"]
     return " ".join(parts)
 
 
 def render(snap: dict | None, error: str | None, now: datetime | None = None) -> list[str]:
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now().astimezone()
     if snap is None:
-        return ["jt ⚠", "---", f"{clean(error, 90)} | color=red", "Refresh | refresh=true"]
+        return ["jt ⚠", "---", f"{clean(error, 90)} | color=red", "Refresh | refresh=true",
+                "Quit jt panel | " + action("quit", refresh=False)]
 
+    cached = error is not None
     badge = snap["badge"]
     fresh = snap["freshness"]
     title = "jt"
@@ -138,19 +184,28 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
         title += " ⚠"
     lines = [title, "---"]
 
+    if cached:
+        lines.append(f"Showing data from {ago(snap.get('generated_at'), now)}: couldn't read the tracker")
+        lines.append("---")
     if fresh["sync_error"]:
         lines.append(f"{SYNC_PROBLEMS.get(fresh['sync_error'], 'Gmail sync problem')} | color=red")
         lines.append("---")
 
+    if snap.get("failure"):
+        failure = snap["failure"]
+        lines.append(clean(failure["message"], 100))
+        if not cached:
+            lines.append("Retry | " + action(*failure["args"]))
     actions = snap["actions"]
     if actions:
         lines.append("Due | size=12")
         for a in actions[:MAX_ACTIONS]:
             mark = "⚠ overdue · " if a["overdue"] else ""
-            lines.append(f"{clean(a['description'], 48)} | size=14")
-            lines.append(f"{mark}{clean(a['company'], 30)} · {due_label(a['due'])} | size=11 color=gray")
-            lines.append(f"--Done | {action('done', str(a['action_id']))}")
-            lines.append(f"--Snooze until tomorrow {SNOOZE_HOUR} | {action('snooze', str(a['action_id']))}")
+            lines.append(f"{clean(a['description'], 48)} | size=14" + (" color=gray" if cached else ""))
+            lines.append(f"{mark}{clean(a['company'], 30)} · {clean(a['role'], 30)} · {due_label(a['due'], now)} | size=11 color=gray")
+            if not cached:
+                lines.append(f"--Done | {action('done', str(a['action_id']))}")
+                lines.append(f"--Snooze until tomorrow 9 AM | {action('snooze', str(a['action_id']), tomorrow_at(SNOOZE_HOUR, now.date()))}")
             if a.get("gmail_url"):
                 lines.append(f"--Open email | {action('open', a['gmail_url'], refresh=False)}")
             if a.get("reason"):
@@ -158,7 +213,9 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
         if len(actions) > MAX_ACTIONS:
             lines.append(f"+{len(actions) - MAX_ACTIONS} more: run `jt today` | color=gray")
     else:
-        lines.append("Nothing due | color=gray")
+        freshness = ("sync needs attention" if fresh["sync_error"] else
+                     f"synced {ago(fresh['gmail_synced_at'], now)}")
+        lines.append(f"Nothing due · {freshness} | color=gray")
 
     review = snap["review"]
     if review["pending"]:
@@ -172,13 +229,19 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
         lines.append("---")
         lines.append("Suggestions | size=12")
         for s in snap["suggestions"][:MAX_ACTIONS]:
-            lines.append(f"{clean(s['kind'].title(), 12)}: {clean(s['company'], 30)} | size=13")
+            lines.append(f"{clean(s['kind'].title(), 12)}: {clean(s['company'], 30)} · {clean(s.get('role'), 30)} · optional | size=13")
             lines.append(f"--{clean(s['reason'], 70)} | color=gray")
+            if not cached:
+                app_id = str(s["application_id"])
+                lines.append("--Remind me tomorrow | " + action(
+                    "remind", app_id, s["kind"], (now.date() + timedelta(days=1)).isoformat()))
+                lines.append("--Dismiss | " + action("dismiss-suggestion", app_id, s["kind"]))
 
     lines.append("---")
     lines.append(f"Gmail synced {ago(fresh['gmail_synced_at'], now)} · "
                  f"classified {ago(fresh['classified_at'], now)} | size=11 color=gray")
     lines.append("Refresh | refresh=true")
+    lines.append("Quit jt panel | " + action("quit", refresh=False))
     return lines
 
 
@@ -191,23 +254,46 @@ def tomorrow_at(hhmm: str, today: date | None = None) -> str:
 def handle_click(argv: list[str]) -> int:
     cmd, rest = argv[0], argv[1:]
     log_usage("click", action=cmd, target=rest[0] if rest and cmd != "open" else None)
-    if cmd == "done":
-        r = jt("action", "done", rest[0], "--json")
-    elif cmd == "snooze":
-        r = jt("action", "snooze", rest[0], "--until", tomorrow_at(SNOOZE_HOUR), "--json")
-    elif cmd == "open":
+    if cmd == "review":
+        return launch_review()
+    if cmd == "open":
         return subprocess.run(["open", rest[0]]).returncode
-    elif cmd == "review":
-        script = f'tell application "Terminal" to do script "cd {JT_REPO} && {JT_PYTHON} jt.py review"'
-        return subprocess.run(["osascript", "-e", script]).returncode
+    if cmd == "quit":
+        return subprocess.run(["osascript", "-e", 'tell application "SwiftBar" to quit']).returncode
+    if cmd == "done":
+        args = ["action", "done", rest[0]]
+    elif cmd == "snooze":
+        if len(rest) == 1:
+            rest.append(tomorrow_at(SNOOZE_HOUR))
+        args = ["action", "snooze", rest[0], "--until", rest[1]]
+    elif cmd == "remind":
+        args = ["action", "add", rest[0], rest[1].capitalize(), "--due", rest[2],
+                "--reason", "Scheduled from SwiftBar suggestion"]
+    elif cmd == "dismiss-suggestion":
+        args = ["action", cmd, *rest]
     else:
         return 2
     try:
-        ok = json.loads(r.stdout).get("ok", False)
-    except ValueError:
+        result = jt(*args, "--json")
+        reply = json.loads(result.stdout)
+        ok = (result.returncode == 0 and reply.get("ok") is True) or (
+            cmd == "done" and reply.get("error") == f"action #{rest[0]} is already done"
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
         ok = False
+    snapshot = read_cache()
+    if snapshot is not None:
+        if ok:
+            snapshot.pop("failure", None)
+        else:
+            row = next((a for a in snapshot["actions"] if str(a["action_id"]) == rest[0]), {})
+            label = clean(row.get("description") or "this task")
+            message = (f"Couldn't mark '{label}' done. Try again" if cmd == "done" else
+                       f"Couldn't complete the {cmd} request. Try again")
+            snapshot["failure"] = {"message": message, "args": [cmd, *rest]}
+        save_cache(snapshot)
     if not ok:
-        log_usage("click_failed", action=cmd, detail=clean(r.stdout or r.stderr, 120))
+        log_usage("click_failed", action=cmd)
     return 0 if ok else 1
 
 
@@ -217,6 +303,13 @@ def main() -> None:
     if os.environ.get("SWIFTBAR_PLUGIN_REFRESH_REASON") == "MenuOpen":
         log_usage("open")
     snap, error = load_snapshot()
+    if snap is not None:
+        previous = read_cache() or {}
+        if "failure" in previous:
+            snap["failure"] = previous["failure"]
+        save_cache(snap)
+    else:
+        snap = read_cache()
     print("\n".join(render(snap, error)))
 
 

@@ -252,6 +252,13 @@ CREATE TABLE IF NOT EXISTS raw_messages (
 """ + ACTIONS_DDL + """
 CREATE INDEX IF NOT EXISTS actions_by_app ON actions (application_id, state);
 
+CREATE TABLE IF NOT EXISTS suggestion_dismissals (
+    application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    until_day DATE NOT NULL,
+    PRIMARY KEY (application_id, kind)
+);
+
 -- Phase 3 writes here: anything the classifier is not sure about.
 -- A GROWING QUEUE IS THE FAILURE SIGNAL. `jt stale` surfaces the count.
 CREATE TABLE IF NOT EXISTS review_queue (
@@ -816,6 +823,14 @@ def add_action(conn, application_id: int, description: str, *,
     if not description or not description.strip():
         sys.exit("error: an action needs a description")
     with write_txn(conn):
+        if reason == "Scheduled from SwiftBar suggestion":
+            previous = conn.execute(
+                """SELECT id FROM actions WHERE application_id=? AND description=?
+                   AND due_date=? AND reason=?""",
+                (application_id, description.strip(), due_date, reason),
+            ).fetchone()
+            if previous:
+                return int(previous["id"])
         if not conn.execute("SELECT 1 FROM applications WHERE id = ?", (application_id,)).fetchone():
             sys.exit(f"error: no application #{application_id}")
         cur = conn.execute(
@@ -891,10 +906,13 @@ def today_entries(conn, today: date, now: datetime, tz: ZoneInfo) -> dict:
                             "due_label": action_due_label(r, tz)})
 
     covered = {r["application_id"] for r in pending_actions(conn, now=now)}
+    dismissed = set(map(tuple, conn.execute(
+        "SELECT application_id, kind FROM suggestion_dismissals WHERE until_day > ?",
+        (today.isoformat(),))))
     suggestions = []
     for i in open_apps - covered:
         kind = action_for(states[i])
-        if kind in {"FOLLOW UP", "CLOSE OUT"}:
+        if kind in {"FOLLOW UP", "CLOSE OUT"} and (i, kind) not in dismissed:
             suggestions.append({"app": apps[i], "kind": kind, "state": states[i],
                                 "score": priority_score(apps[i], states[i])})
     suggestions.sort(key=lambda x: (-x["score"], x["app"]["id"]))
@@ -1235,6 +1253,14 @@ def _print_ok(**fields) -> None:
 
 def cmd_action(conn, a):
     tz = viewer_tz()
+    if a.action_cmd == "dismiss-suggestion":
+        with write_txn(conn):
+            conn.execute(
+                """INSERT INTO suggestion_dismissals VALUES (?, ?, ?)
+                   ON CONFLICT(application_id, kind) DO UPDATE SET until_day=excluded.until_day""",
+                (a.id, a.kind, (datetime.now(tz).date() + timedelta(days=14)).isoformat()),
+            )
+        return _print_ok()
     if a.action_cmd == "add":
         if a.at:
             try:
@@ -1984,6 +2010,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("action", help="add, list, finish, or snooze actions")
     act = s.add_subparsers(dest="action_cmd", required=True)
+    c = act.add_parser("dismiss-suggestion", help="hide a suggestion for 14 days")
+    c.add_argument("id", type=int)
+    c.add_argument("kind", choices=["FOLLOW UP", "CLOSE OUT"])
+    c.add_argument("--json", action="store_true")
     c = act.add_parser("add", help="add an action to an application")
     c.add_argument("id", type=int, help="application id")
     c.add_argument("description")
