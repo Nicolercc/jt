@@ -1811,8 +1811,10 @@ def cmd_review_item(conn, a):
             evidence = proposal.get("evidence")
             if not raw or not isinstance(evidence, str) or not evidence_in_body(evidence, raw["body"]):
                 sys.exit("error: proposed evidence must appear in the source email")
+            from classify import _field_types, without_empty_request, write_request
+
+            proposal = without_empty_request(proposal)
             if "request" in proposal or kind == "request":
-                from classify import _field_types, write_request
 
                 if proposal.get("gmail_msg_id") != row["gmail_msg_id"] or _field_types(proposal):
                     sys.exit("error: invalid request proposal")

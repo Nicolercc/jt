@@ -1366,3 +1366,26 @@ def test_replayed_request_email_is_still_marked_processed(conn):
     classify.apply_verdicts(conn, v)
     assert conn.execute("SELECT processed FROM raw_messages").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 1
+
+
+def test_empty_request_object_is_ignored_not_fatal(conn):
+    """Live model behavior: with no request in the email, the model sends a
+    request object whose fields are all empty instead of omitting it. That must
+    not discard the (valid) stage event it came with."""
+    add_app(conn)
+    add_raw(conn)
+    p = proposal()
+    p["request"] = {"description": "", "due_text": "", "due_iso": "", "due_tz": ""}
+    verdicts = classify.verdicts_for(conn, classify.load_unprocessed(conn, 10), json.dumps([p]))
+    assert [v.ok for v in verdicts] == [True], verdicts[0].reason
+    assert classify.apply_verdicts(conn, verdicts) == (1, 0)
+    assert conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
+
+
+def test_request_kind_with_empty_request_is_still_invalid(conn):
+    add_app(conn)
+    add_raw(conn)
+    p = proposal(kind="request")
+    p["request"] = {"description": "  ", "due_text": "", "due_iso": "", "due_tz": ""}
+    v = classify.verdicts_for(conn, classify.load_unprocessed(conn, 10), json.dumps([p]))[0]
+    assert not v.ok and "request" in v.reason

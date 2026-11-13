@@ -581,7 +581,21 @@ def match_application(conn, company: str, role_hint: str) -> tuple[sqlite3.Row |
     return same_company[0][0], ""
 
 
+def without_empty_request(p: dict[str, Any]) -> dict[str, Any]:
+    """Live model behavior: with nothing to ask of the applicant, the model often
+    sends a request object whose fields are all empty instead of omitting it.
+    Treat that as "no request", so it can't sink a valid stage event. A
+    standalone `request` proposal keeps it, and still fails validation."""
+    request = p.get("request")
+    if (p.get("kind") != "request" and isinstance(request, dict)
+            and all(not str(request.get(k) or "").strip()
+                    for k in ("description", "due_text", "due_iso", "due_tz"))):
+        return {k: v for k, v in p.items() if k != "request"}
+    return p
+
+
 def validate_proposal(conn, p: dict[str, Any], messages_by_id: dict[str, sqlite3.Row]) -> Verdict:
+    p = without_empty_request(p)
     type_reason = _field_types(p)
     raw_id = p.get("gmail_msg_id")
     msg_id: str = raw_id if isinstance(raw_id, str) else "unknown"
