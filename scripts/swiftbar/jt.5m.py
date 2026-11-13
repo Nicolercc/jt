@@ -228,6 +228,12 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
             lines.append(f"{clean(it.get('from') or '-', 30)} · {clean(it['summary'], 70)} | size=11 color=gray")
             if not cached:
                 for c in it.get("choices", []):
+                    if c.get("new_app"):
+                        lines.append(f"--{clean(c['label'], 70)}")
+                        for lane in c.get("lanes") or []:
+                            lines.append(f"----{LANE_NAMES.get(lane, lane)} | "
+                                         + action("add-app", str(it["review_id"]), lane))
+                        continue
                     lines.append(f"--✓ {clean(c['label'], 70)} | "
                                  + action("approve", str(it["review_id"]), str(c["app_id"])))
                 lines.append("--Dismiss: not needed | " + action("dismiss-review", str(it["review_id"])))
@@ -279,6 +285,7 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
 FAILURE_TTL_MINUTES = 15
 RETRYABLE_CLICKS = {"done", "snooze", "remind", "dismiss-suggestion"}
 MAX_REVIEW_ITEMS = 8
+LANE_NAMES = {"swe": "Software (swe)", "ops": "Ops", "comms": "Comms"}
 
 
 def _recent(ts: str | None, now: datetime, minutes: int) -> bool:
@@ -333,6 +340,8 @@ def handle_click(argv: list[str]) -> int:
                 "--reason", "Scheduled from SwiftBar suggestion"]
     elif cmd == "dismiss-suggestion":
         args = ["action", cmd, *rest]
+    elif cmd == "add-app":
+        args = ["review", "add-app", rest[0], "--lane", rest[1]]
     elif cmd == "close":
         args = ["log", rest[0], rest[1], "--note", "closed from the menu bar"]
     elif cmd == "approve":

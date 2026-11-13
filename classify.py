@@ -659,7 +659,7 @@ def validate_proposal(conn, p: dict[str, Any], messages_by_id: dict[str, sqlite3
         return Verdict(p["gmail_msg_id"], False, "evidence span is too long", p)
     if words < MIN_EVIDENCE_WORDS:
         return Verdict(p["gmail_msg_id"], False, "evidence span is too short to be diagnostic", p)
-    if not evidence_in_body(evidence, msg["body"]):
+    if not jt.evidence_in_email(evidence, msg["subject"], msg["body"]):
         return Verdict(p["gmail_msg_id"], False, "evidence is not a verbatim span from body", p)
     if words > MAX_EVIDENCE_WORDS:
         # The whole quote is verbatim, so its leading words are too.

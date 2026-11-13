@@ -1465,3 +1465,13 @@ def test_a_clear_role_hint_still_wins_over_inference(conn):
     _, assoc = _ramp(conn, agent_events=("screen",), associate_events=("confirmed",))
     v = _verdict(conn, "request", role_hint="Customer Experience Associate")
     assert v.ok and v.application_id == assoc
+
+
+def test_evidence_from_the_subject_line_is_accepted(conn):
+    add_app(conn)
+    conn.execute("INSERT INTO raw_messages (gmail_msg_id, received_on, sender, subject, body) "
+                 "VALUES ('s1', '2026-08-02', 'x@a.com', 'Interview invitation for Backend Engineer', 'See you soon.')")
+    conn.commit()
+    p = proposal("s1", kind="screen", evidence="Interview invitation for Backend Engineer")
+    v = classify.verdicts_for(conn, classify.load_unprocessed(conn, 10), json.dumps([p]))[0]
+    assert v.ok, v.reason
