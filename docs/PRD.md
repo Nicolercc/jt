@@ -75,9 +75,9 @@ Job-search updates are scattered across Gmail, assessment platforms and memory. 
 | R3 | Consequential changes (rejection, offer…) always need confirmation | ✅ #15 |
 | R4 | Menu: due tasks, reviews, suggestions; every row has a verb; failures visible | ✅ #16, #27 |
 | R5 | Two roles at one company resolve automatically when the evidence allows | ✅ #30 |
-| R6 | **Review only shows things that need a decision** (non-job mail goes to "ignored") | ❌ **Now-E2** |
+| R6 | Review only shows things that need a decision (non-job mail goes to "ignored") | ✅ #32 |
 | R7 | Accuracy measured on ≥ 150 labeled emails, 20% frozen holdout | ❌ **Now-3** (23 labeled) |
-| R8 | One-command deploy with a version check | ❌ **Now-E3** |
+| R8 | One-command deploy with a version check | ✅ #33 (`scripts/deploy.sh`, `jt version`, version in panel footer) |
 
 ### P1: v1 polish
 | # | Requirement | Status |
@@ -125,9 +125,9 @@ Native star app (Finder launch, notifications), Apple Reminders for phone reach,
 | **Now-3** | Nicole | Label the 117 emails in 3–4 sittings; prioritize deadline and assessment emails | `evals.dataset check` shows ≥ 150 labeled, no spelling variants |
 | **Now-4** | Nicole | Check the Google OAuth publishing status; switch Testing → In production (free) | No 7-day sign-in expiry |
 | **Now-E1** | Eng | ✅ **Same-company role resolution** (#30). The planned "±3 days" rule failed on real data (both Ramp roles were applied to and emailed on the same day). Replaced by evidence rules for progress emails only: skip closed applications; otherwise pick the only application with an active process; else review. The inference is shown in the task's reason. | Done: both real Ramp CodeSignal cases resolve to CX Agent; genuine ties still go to review |
-| **Now-E2** | Eng | **Ignored bucket:** a "no proposal" email from a sender that isn't a recruiting sender goes to `ignored` (visible via `jt ignored`, restorable), not Review | Dior, GitHub and Tailscale-style mail never enters Review; a test proves an ATS sender still does |
-| **Now-E3** | Eng | `jt version` (commit + schema) + `scripts/deploy.sh` (backup → verify → pull → kickstart → verify freshness) | One command deploys; the panel footer shows the version |
-| **Now-E4** | Eng | Hygiene: add Hireflix to the default senders; close #17; close or rebase #18–#20 on v8; leave #21/#22 frozen; prune merged local copies | ≤ 1 dev copy + production; no stale PRs |
+| **Now-E2** | Eng | ✅ **Ignored bucket** (#32): no-proposal mail from non-recruiting, non-applied senders goes to `jt ignored` (restorable). Model failures, failed checks and unknown senders still go to Review. | Done: replay of the real queue ignored Dior, GitHub and Tailscale and kept the CodeSignal and Hireflix mail; Review 9 → 6 |
+| **Now-E3** | Eng | ✅ **`jt version` + `scripts/deploy.sh`** (#33): refuses a dirty prod checkout; backs up and verifies before pulling; runs the job and checks success; `--dry-run`. Version shows in the panel footer. | Done: tests prove refusal, dry run and backup-failure stop; used for this deploy |
+| **Now-E4** | Eng + Nicole | 🟡 Hireflix default ✅ (#34). **Waiting on Nicole:** close #17, #18 and #20 (they serve the frozen native app or are a prototype); #19 (stale-stage guard) is worth a careful rebase, since it conflicts with current jt.py; #21/#22 stay frozen until M6; delete the 5 merged local copies (a safety check blocks me from deleting folders). | ≤ 1 dev copy + production; no stale PRs |
 
 ### NEXT (after the test week). Exit: an M6 decision recorded with evidence.
 - Run the baseline: `python3 -m evals.run --set holdout --policy compare` and record it in DESIGN.md §10.
