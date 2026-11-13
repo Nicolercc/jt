@@ -1,5 +1,7 @@
 # jt design — revision 3
 
+> **2026-11-13:** The current plan lives in [PRD.md](PRD.md) and the as-built system in [ARCHITECTURE.md](ARCHITECTURE.md). This file remains the **decision log** (D1–D7 and the dated log in §10). Milestone statuses here are historical; PRD §9 is the live status.
+
 **Status:** All one-way-door decisions (D1–D7) decided 2026-11-12. Next: M1.
 **Owner:** Nicole Rodriguez
 **Last updated:** 2026-11-12
