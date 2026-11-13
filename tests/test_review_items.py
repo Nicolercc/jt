@@ -104,3 +104,83 @@ def test_terminal_review_is_readable(conn, capsys):
     assert "No job update found in this email." in out
     assert "null" not in out and "classifier returned" not in out
     assert "jt review dismiss" in out
+
+
+# ---------------------------------------------------------------- new application
+
+def td_review(conn, kind="screen", role="Associate Banker II"):
+    return review(conn, "td1", "no application company match for 'TD Bank'",
+                  P(kind, company="TD Bank", role_hint=role) | {
+                      "gmail_msg_id": "td1", "occurred_on": "2026-09-23",
+                      "evidence": "Thank you for taking the time to complete the video interview"},
+                  sender="recruiting@td.com", subject="Interview for Associate Banker II at TD Bank")
+
+
+def test_unknown_company_offers_add_as_new_application(conn):
+    td_review(conn)
+    [it] = items(conn)
+    assert it["summary"] == ("Looks like an interview or screen invite from TD Bank, "
+                             "but you have no application at TD Bank.")
+    assert it["choices"] == [{"label": "Add TD Bank · Associate Banker II as a new application",
+                              "new_app": True, "lanes": ["swe", "ops", "comms"]}]
+
+
+def test_no_new_app_choice_without_a_role_or_for_an_illegal_first_stage(conn):
+    td_review(conn, role="")
+    td_review_id = conn.execute("SELECT MAX(id) FROM review_queue").fetchone()[0]
+    assert items(conn)[0]["choices"] == []
+    with jt.write_txn(conn):
+        conn.execute("UPDATE review_queue SET resolved = 1 WHERE id = ?", (td_review_id,))
+    # 'tech' can't be an application's first stage under transitions.py
+    with jt.write_txn(conn):
+        conn.execute("DELETE FROM raw_messages")
+    td_review(conn, kind="tech")
+    assert items(conn)[0]["choices"] == []
+
+
+def test_add_app_creates_application_and_records_the_update(conn, capsys):
+    rid = td_review(conn)
+    jt.main_args(["review", "add-app", str(rid), "--lane", "ops", "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] and out["resolved"]
+    app = conn.execute("SELECT * FROM applications WHERE company = 'TD Bank'").fetchone()
+    assert (app["role"], app["lane"], app["applied_on"]) == ("Associate Banker II", "ops", "2026-09-23")
+    assert "applied date unknown" in app["notes"]
+    kinds = [r[0] for r in conn.execute("SELECT kind FROM events WHERE application_id = ?", (app["id"],))]
+    assert kinds == ["screen"]
+    assert conn.execute("SELECT resolved FROM review_queue WHERE id = ?", (rid,)).fetchone()[0] == 1
+
+
+def test_add_app_failure_leaves_nothing_behind(conn, capsys):
+    """If the update can't be recorded, the new application must not exist."""
+    rid = td_review(conn, kind="tech")
+    with pytest.raises(SystemExit):
+        jt.main_args(["review", "add-app", str(rid), "--lane", "ops", "--json"])
+    assert conn.execute("SELECT COUNT(*) FROM applications WHERE company = 'TD Bank'").fetchone()[0] == 0
+    assert conn.execute("SELECT resolved FROM review_queue WHERE id = ?", (rid,)).fetchone()[0] == 0
+
+
+# ---------------------------------------------------------------- evidence source
+
+def test_evidence_quoted_from_the_subject_counts(conn, capsys):
+    """Real case (TD Bank): the model quoted the subject line. It is part of the
+    email, so a verbatim subject quote is valid evidence."""
+    rid = review(conn, "td2", "no application company match for 'TD Bank'",
+                 P("screen", company="TD Bank", role_hint="Associate Banker II") | {
+                     "gmail_msg_id": "td2", "occurred_on": "2026-09-23",
+                     "evidence": "Interview for Associate Banker II at TD Bank"},
+                 sender="recruiting@td.com", subject="Interview for Associate Banker II at TD Bank",
+                 body="Hello, please pick a time that works for you.")
+    assert items(conn)[0]["choices"]
+    jt.main_args(["review", "add-app", str(rid), "--lane", "ops", "--json"])
+    assert json.loads(capsys.readouterr().out)["ok"]
+
+
+def test_no_choice_is_offered_when_the_evidence_is_not_in_the_email(conn):
+    """A shown button must always work: same evidence check as approval."""
+    review(conn, "td3", "no application company match for 'TD Bank'",
+           P("screen", company="TD Bank", role_hint="Associate Banker II") | {
+               "gmail_msg_id": "td3", "occurred_on": "2026-09-23",
+               "evidence": "words that appear nowhere"},
+           sender="recruiting@td.com", subject="Hello", body="Nothing relevant.")
+    assert items(conn)[0]["choices"] == []

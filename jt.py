@@ -93,6 +93,12 @@ def normalize_for_match(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
+def evidence_in_email(evidence: str, subject: str | None, body: str | None) -> bool:
+    """Verbatim (whitespace-tolerant) quote from the email's subject or body.
+    Models sometimes quote the subject line, which is part of the email."""
+    return evidence_in_body(evidence, f"{subject or ''}\n{body or ''}")
+
+
 def evidence_in_body(evidence: str, body: str | None) -> bool:
     needle = normalize_for_match(evidence)
     return bool(needle) and needle in normalize_for_match(body or "")
@@ -1797,6 +1803,26 @@ def cmd_review_item(conn, a):
                 sys.exit(f"error: queue item {a.queue_id} was already resolved")
             print(f"queue item {a.queue_id} was already resolved")
             return
+        if a.review_cmd == "add-app":
+            # Create the application and record the update in ONE transaction:
+            # if the approval below exits, the rollback removes the new row too.
+            proposal = json.loads(row["proposed_json"] or "null")
+            if not isinstance(proposal, dict):
+                sys.exit("error: this item has no proposed update to record")
+            new_company = str(proposal.get("company") or "").strip()
+            new_role = str(proposal.get("role_hint") or "").strip()
+            if not new_company or not new_role:
+                sys.exit("error: this email doesn't name both a company and a role; use jt add")
+            if a.lane not in LANES:
+                sys.exit(f"error: --lane must be one of {', '.join(LANES)}")
+            day = parse_day(proposal.get("occurred_on"))
+            cur = conn.execute(
+                """INSERT INTO applications (company, role, lane, applied_on, source, notes)
+                   VALUES (?, ?, ?, ?, 'email review', ?)""",
+                (new_company, new_role, a.lane, day,
+                 "Added from review; applied date unknown, set to the first email's date."))
+            a.app_id = cur.lastrowid
+            a.review_cmd = "approve"
         event_id = None
         if a.review_cmd == "approve":
             proposal = json.loads(row["proposed_json"])
@@ -1828,10 +1854,11 @@ def cmd_review_item(conn, a):
             day = parse_day(proposed_day)
             if day < app["applied_on"] or day > date.today().isoformat():
                 sys.exit("error: proposed event date is outside the application timeline")
-            raw = conn.execute("SELECT body FROM raw_messages WHERE gmail_msg_id = ?",
+            raw = conn.execute("SELECT subject, body FROM raw_messages WHERE gmail_msg_id = ?",
                                (row["gmail_msg_id"],)).fetchone()
             evidence = proposal.get("evidence")
-            if not raw or not isinstance(evidence, str) or not evidence_in_body(evidence, raw["body"]):
+            if (not raw or not isinstance(evidence, str)
+                    or not evidence_in_email(evidence, raw["subject"], raw["body"])):
                 sys.exit("error: proposed evidence must appear in the source email")
             from classify import _field_types, without_empty_request, write_request
 
@@ -1903,7 +1930,8 @@ def review_items(conn, limit: int = 10) -> list[dict]:
     choices that `jt review approve` would accept (legal for the application)."""
     from email.utils import parseaddr
     rows = conn.execute(
-        """SELECT q.id, q.reason, q.proposed_json, q.gmail_msg_id, m.received_on, m.sender, m.subject
+        """SELECT q.id, q.reason, q.proposed_json, q.gmail_msg_id, m.received_on, m.sender, m.subject,
+                  m.body
            FROM review_queue q LEFT JOIN raw_messages m ON m.gmail_msg_id = q.gmail_msg_id
            WHERE q.resolved = 0 ORDER BY q.created_at, q.id LIMIT ?""", (limit,)).fetchall()
     apps = conn.execute("SELECT * FROM applications ORDER BY id").fetchall()
@@ -1915,8 +1943,13 @@ def review_items(conn, limit: int = 10) -> list[dict]:
             p = None
         p = p if isinstance(p, dict) else {}
         kind, company = p.get("kind"), p.get("company") or None
-        choices = []
-        if kind and company and (kind in EVENT_KINDS or kind == "request") and kind != "note":
+        role_hint = (p.get("role_hint") or "").strip()
+        choices: list[dict] = []
+        evidence = p.get("evidence")
+        # A shown button must always work: same evidence check as approval.
+        evidence_ok = isinstance(evidence, str) and evidence_in_email(evidence, r["subject"], r["body"])
+        if (evidence_ok and kind and company
+                and (kind in EVENT_KINDS or kind == "request") and kind != "note"):
             for app in apps:
                 if not _company_matches(company, app["company"]):
                     continue
@@ -1931,6 +1964,11 @@ def review_items(conn, limit: int = 10) -> list[dict]:
                          if kind == "request" and req and req.get("description") else
                          f"Record {KIND_WORDS.get(kind, kind)} for {app['company']} · {app['role']}")
                 choices.append({"label": label, "app_id": app["id"]})
+            has_app = any(_company_matches(company, app["company"]) for app in apps)
+            if (not has_app and role_hint
+                    and (kind == "request" or is_legal("applied", kind)[0])):
+                choices.append({"label": f"Add {company} · {role_hint} as a new application",
+                                "new_app": True, "lanes": list(LANES)})
         out.append({
             "review_id": r["id"],
             "received_on": r["received_on"],
@@ -1946,7 +1984,7 @@ def review_items(conn, limit: int = 10) -> list[dict]:
 def cmd_review(conn, a):
     if getattr(a, "review_cmd", None) == "stale":
         return cmd_review_stale(conn, a)
-    if getattr(a, "review_cmd", None) in {"show", "approve", "dismiss"}:
+    if getattr(a, "review_cmd", None) in {"show", "approve", "dismiss", "add-app"}:
         return cmd_review_item(conn, a)
     items = review_items(conn, limit=100)
     if getattr(a, "json", False):
@@ -2206,7 +2244,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_today)
 
     s = sub.add_parser("review", help="pending classifier proposals (Phase 3)")
-    s.add_argument("review_cmd", nargs="?", choices=["stale", "show", "approve", "dismiss"])
+    s.add_argument("review_cmd", nargs="?", choices=["stale", "show", "approve", "dismiss", "add-app"])
+    s.add_argument("--lane", choices=LANES, help="add-app: lane for the new application")
     s.add_argument("queue_id", nargs="?", type=int)
     s.add_argument("--app-id", type=int)
     s.add_argument("--override-company", action="store_true")

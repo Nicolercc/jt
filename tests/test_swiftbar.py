@@ -330,3 +330,20 @@ def test_failed_approve_shows_the_reason_and_expires(plugin, monkeypatch):
     cached = plugin.read_cache()
     assert "illegal transition" in cached["failure"]["message"]
     assert cached["failure"]["ts"]
+
+
+def test_new_application_choice_asks_for_the_lane(plugin, monkeypatch):
+    it = item(rid=21, choices=[{"label": "Add TD Bank · Associate Banker II as a new application",
+                                "new_app": True, "lanes": ["swe", "ops", "comms"]}])
+    s = snap(badge={"due": 0, "reviews": 1},
+             review={"pending": 1, "oldest_days": 0, "top": None, "items": [it]})
+    lines = plugin.render(s, None, NOW)
+    assert any(x.startswith("--Add TD Bank · Associate Banker II as a new application") for x in lines)
+    ops = next(x for x in lines if x.startswith("----Ops"))
+    assert 'param1=add-app param2="21" param3="ops"' in ops
+    calls = []
+    class R:
+        returncode, stdout, stderr = 0, json.dumps({"ok": True}), ""
+    monkeypatch.setattr(plugin, "jt", lambda *a, **k: calls.append(a) or R())
+    assert plugin.handle_click(["add-app", "21", "ops"]) == 0
+    assert calls[0] == ("review", "add-app", "21", "--lane", "ops", "--json")
