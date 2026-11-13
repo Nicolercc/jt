@@ -17,7 +17,7 @@ TOP_KEYS = {"schema_version", "generated_at", "badge", "freshness", "actions",
             "suggestions", "review", "recorded", "version"}
 ACTION_KEYS = {"action_id", "application_id", "company", "role", "description", "due",
                "overdue", "origin", "reason", "gmail_msg_id", "gmail_url"}
-SUGGESTION_KEYS = {"application_id", "company", "role", "kind", "reason"}
+SUGGESTION_KEYS = {"application_id", "company", "role", "kind", "reason", "close_choices"}
 FRESHNESS_KEYS = {"gmail_synced_at", "classified_at", "sync_error"}
 
 
