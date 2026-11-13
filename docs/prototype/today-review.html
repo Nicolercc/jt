@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jt · Today and Review</title>
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; background: #f1f0ed; color: #252820; font: 16px/1.5 system-ui, sans-serif; }
+main { max-width: 420px; margin: 20px 20px 20px auto; padding: 20px; box-shadow: 0 12px 36px #26372a18; background: white; border: 1px solid #bec8d5; border-radius: 22px; }
+nav, .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+button, select, .action { font: inherit; padding: 8px 12px; border-radius: 8px; border: 1px solid #68788e; background: white; color: #252820; }
+button, select { cursor: pointer; }
+.primary, [aria-current="page"] { color: white; background: #285443; }
+:focus-visible { outline: 3px solid #ad4c11; outline-offset: 4px; }
+h1 { margin-bottom: 4px; font-size: 26px; }
+.summary { color: #475349; max-width: 52ch; }
+article h2 { margin-top: 0; }
+#status { margin-top: 16px; font-weight: 600; }
+h2 { margin-bottom: 0; }
+p { margin-top: 4px; }
+article, fieldset { border: 1px solid #bec8d5; border-radius: 12px; padding: 16px; margin: 12px 0; }
+blockquote { margin: 0; padding-left: 12px; border-left: 3px solid #68788e; }
+fieldset label { display: block; padding: 6px; }
+dialog { max-width: min(520px, 92vw); border: 1px solid #68788e; border-radius: 14px; padding: 24px; }
+dialog::backdrop { background: #19253888; }
+.fixture { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 22px; padding-top: 16px; border-top: 1px solid #bec8d5; }
+.brand { margin-bottom: 14px; font-weight: 700; color: #285443; }
+.details { border-top: 1px solid #bec8d5; padding-top: 12px; margin-top: 16px; }
+summary { cursor: pointer; }
+@media (max-width: 460px) { main { margin: 12px; } }
+</style>
+<main>
+<p class="brand">jt · Recruiter assistant</p>
+<nav aria-label="Tracker">
+<button id="today" aria-current="page">Today</button>
+<button id="review">Review</button>
+</nav>
+<section id="today-panel" aria-labelledby="today-heading">
+<h1 id="today-heading" tabindex="-1">Today</h1>
+<p class="summary" id="today-summary"></p>
+<article id="task" aria-labelledby="task-heading">
+<h2 id="task-heading">Send interview availability</h2>
+<p>Northstar Labs · Frontend Engineer<br><time datetime="2026-11-16T16:00:00-05:00">Mon, Nov 16 · 4:00 PM ET</time></p>
+<p id="task-help">Open the recruiter’s request and reply with two times. Come back and mark it done once you’ve sent your reply.</p>
+<div class="actions"><button class="primary" id="email" aria-haspopup="dialog">Open email</button><button id="done" aria-describedby="task-help">Mark done</button></div>
+</article>
+<p id="empty" hidden>No actions due today.</p>
+<button id="review-update" hidden>Review recruiter update</button>
+</section>
+<section id="review-panel" aria-labelledby="review-heading" hidden>
+<h1 id="review-heading" tabindex="-1">Review</h1>
+<div id="proposal">
+<h2>Phone screen confirmed at Northstar Labs</h2>
+<p class="summary">jt found two applications at this company and held the update for you. The email mentions Design Systems, which matches the Frontend Engineer application.</p>
+<article aria-label="Recruiter email excerpt">
+<p><strong>Maya Chen · Northstar Labs Recruiting</strong></p>
+<blockquote>Thanks for sending your availability. Your phone screen is confirmed for Tuesday, November 17 at 11:00 AM ET. We’ll discuss the design systems team and your component library work.</blockquote>
+</article>
+<p>Confirming changes the selected application from <strong>Applied</strong> to <strong>Interview scheduled</strong>. Leave for later keeps this update in Review.</p>
+<form id="decision">
+<fieldset>
+<legend>Which application does this email belong to?</legend>
+<label><input type="radio" name="role" value="Frontend Engineer" required> Frontend Engineer · Design Systems</label>
+<label><input type="radio" name="role" value="Full Stack Engineer" required> Full Stack Engineer · Billing</label>
+</fieldset>
+<div class="actions"><button class="primary">Confirm update</button><button type="button" id="later">Leave for later</button></div>
+</form>
+</div>
+<p id="review-empty" hidden></p>
+</section>
+<p id="status" role="status"></p>
+<section class="details" aria-labelledby="recorded-heading">
+<h2 id="recorded-heading">Recorded by jt</h2>
+<p id="confirmation" hidden><strong>Cedar Studio · UI Engineer</strong><br>Application confirmed from a recruiter email. <button id="confirmation-source" aria-haspopup="dialog">View source</button></p>
+<p id="activity"></p>
+<p class="summary">Demo only. These changes reset when you reload.</p>
+</section>
+<div class="fixture">
+<label for="scenario">Synthetic demo</label>
+<select id="scenario">
+<option value="morning">A typical morning</option>
+<option value="due">One due action</option>
+<option value="ambiguous">Two roles at one company</option>
+<option value="empty">Empty day</option>
+</select>
+<button id="reset">Reset demo</button>
+</div>
+</main>
+<dialog id="confirmation-dialog" aria-labelledby="confirmation-heading">
+<h2 id="confirmation-heading">Application received</h2>
+<p>From Cedar Studio Recruiting</p>
+<p>We received your application for the UI Engineer role.</p>
+<form method="dialog"><button autofocus>Close email</button></form>
+</dialog>
+<dialog id="source" aria-labelledby="subject">
+<h2 id="subject">Frontend Engineer interview availability</h2>
+<p>From Maya Chen · Northstar Labs Recruiting</p>
+<p>Could you reply by Monday at 4:00 PM ET with two times you’re available to speak with our Design Systems team?</p>
+<form method="dialog"><button autofocus>Close email</button></form>
+</dialog>
+<script>
+const get = id => document.getElementById(id);
+let taskState;
+let reviewState;
+let statusMessage;
+let recordedConfirmation;
+
+function show(view, moveFocus = true) {
+  for (const page of ['today', 'review']) {
+    get(page + '-panel').hidden = page !== view;
+    if (page === view) get(page).setAttribute('aria-current', 'page');
+    else get(page).removeAttribute('aria-current');
+  }
+  if (moveFocus) get(view + '-heading').focus();
+}
+
+function render() {
+  get('task').hidden = taskState !== 'due';
+  get('empty').hidden = taskState === 'due';
+  get('empty').textContent = taskState === 'done' ? 'No remaining actions due today.' : 'No actions due today.';
+  get('proposal').hidden = reviewState !== 'pending';
+  get('review-empty').hidden = reviewState === 'pending';
+  get('review-empty').textContent = reviewState === 'confirmed' ? statusMessage : 'No updates waiting for review.';
+  get('today-summary').textContent = taskState === 'due'
+    ? 'jt found one recruiter email that needs a reply.'
+    : reviewState === 'pending'
+      ? 'jt found a recruiter update and needs your help choosing the application.'
+      : 'You’re caught up on the recruiter updates in this demo.';
+  get('confirmation').hidden = !recordedConfirmation;
+  if (recordedConfirmation) {
+    const needsYou = Number(taskState === 'due') + Number(reviewState === 'pending');
+    get('today-summary').textContent = needsYou + ' need your attention. jt recorded an application confirmation.';
+  }
+  get('activity').textContent = reviewState === 'confirmed' ? statusMessage
+    : reviewState === 'pending' ? 'Held the Northstar Labs phone screen update for review. The application stage is unchanged.'
+    : taskState === 'done' ? 'Recorded that you handled the Northstar Labs availability request.'
+    : taskState === 'due' ? 'Flagged the Northstar Labs availability request for the Frontend Engineer application.'
+    : 'No new recruiter updates.';
+  get('review-update').hidden = reviewState !== 'pending';
+  get('review').textContent = reviewState === 'pending' ? 'Review (1)' : 'Review';
+}
+
+function reset(moveFocus) {
+  const scenario = get('scenario').value;
+  taskState = ['morning', 'due'].includes(scenario) ? 'due' : 'empty';
+  reviewState = ['morning', 'ambiguous'].includes(scenario) ? 'pending' : 'empty';
+  recordedConfirmation = scenario === 'morning';
+  statusMessage = '';
+  get('status').textContent = '';
+  get('decision').reset();
+  render();
+  show('today', moveFocus);
+}
+
+get('today').onclick = () => show('today');
+get('review').onclick = () => show('review');
+get('review-update').onclick = () => show('review');
+get('confirmation-source').onclick = () => get('confirmation-dialog').showModal();
+get('email').onclick = () => get('source').showModal();
+get('done').onclick = () => {
+  taskState = 'done';
+  render();
+  get('today-heading').focus();
+  get('status').textContent = 'Interview availability marked done for Northstar Labs · Frontend Engineer.';
+};
+get('decision').onsubmit = event => {
+  event.preventDefault();
+  const role = new FormData(event.currentTarget).get('role');
+  statusMessage = 'Northstar Labs · ' + role + ' updated to Interview scheduled.';
+  reviewState = 'confirmed';
+  render();
+  get('review-heading').focus();
+  get('status').textContent = statusMessage;
+};
+get('later').onclick = () => {
+  get('decision').reset();
+  show('today');
+  get('status').textContent = 'Northstar Labs update is still waiting in Review.';
+};
+get('scenario').onchange = () => reset(false);
+get('reset').onclick = () => reset(true);
+reset(false);
+</script>
+</html>
