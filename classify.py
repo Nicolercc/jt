@@ -12,6 +12,7 @@ import fcntl
 import json
 import os
 import re
+from email.utils import parseaddr
 import sqlite3
 import sys
 import time
@@ -716,8 +717,54 @@ def verdicts_for(conn, messages: list[sqlite3.Row], raw_response: str) -> list[V
     for m in messages:
         if m["gmail_msg_id"] not in seen:
             verdicts.append(Verdict(
-                m["gmail_msg_id"], False, "classifier returned no proposal for this message", None))
+                m["gmail_msg_id"], False, NO_PROPOSAL_REASON, None))
     return verdicts
+
+
+# PRD Now-E2: the "found nothing" case from a sender that is neither a
+# recruiting platform nor a company you applied to goes to an ignored list
+# (visible via `jt ignored`, restorable) instead of Review.
+NO_PROPOSAL_REASON = "classifier returned no proposal for this message"
+IGNORED_NOTE = ("auto-ignored: no job content found, and the sender is not a recruiting "
+                "platform or a company you applied to")
+RECRUITING_DOMAIN_TOKENS = (
+    "greenhouse", "lever.co", "ashbyhq", "workday", "smartrecruiters", "workable", "icims",
+    "jobvite", "bamboohr", "rippling", "dover", "breezy", "recruitee", "teamtailor", "jazzhr",
+    "successfactors", "taleo", "oraclecloud", "ultipro", "paylocity", "adp", "linkedin",
+    "indeed", "wellfound", "handshake", "hireflix", "codesignal", "hackerrank", "hirevue",
+    "modernhire", "karat", "coderpad", "testgorilla", "calendly", "goodtime", "gem.com",
+    "paradox", "myinterview",
+)
+
+
+def _domain(sender: str | None) -> str:
+    return parseaddr(sender or "")[1].rpartition("@")[2].lower()
+
+
+def is_job_sender(conn, sender: str | None) -> bool:
+    """True for recruiting platforms and companies you applied to. Unknown or
+    unparseable senders count as job senders, so they stay in Review."""
+    domain = _domain(sender)
+    if not domain:
+        return True
+    if any(token in domain for token in RECRUITING_DOMAIN_TOKENS):
+        return True
+    flat = re.sub(r"[^a-z0-9]", "", domain)
+    for (company,) in conn.execute("SELECT DISTINCT company FROM applications"):
+        words = re.findall(r"[a-z0-9]+", company.lower())
+        keys = {"".join(words)} | {w for w in words[:1] if len(w) >= 4}
+        if any(len(k) >= 3 and k in flat for k in keys):
+            return True
+    return False
+
+
+def write_ignored(conn, verdict: Verdict) -> None:
+    conn.execute(
+        """INSERT INTO review_queue (gmail_msg_id, proposed_json, reason,
+                                    resolved, resolved_note, resolved_at)
+           VALUES (?, 'null', ?, 1, ?, datetime('now'))""",
+        (verdict.gmail_msg_id, verdict.reason, IGNORED_NOTE),
+    )
 
 
 def write_review(conn, verdict: Verdict) -> None:
@@ -877,9 +924,14 @@ def _apply_verdicts_locked(conn, verdicts: list[Verdict]) -> tuple[int, int]:
         else:
             if _routes_to_application_candidate(verdict):
                 write_application_candidate(conn, verdict)
+                reviewed += 1
+            elif verdict.reason == NO_PROPOSAL_REASON and not is_job_sender(
+                    conn, (conn.execute("SELECT sender FROM raw_messages WHERE gmail_msg_id = ?",
+                                        (verdict.gmail_msg_id,)).fetchone() or {"sender": None})["sender"]):
+                write_ignored(conn, verdict)
             else:
                 write_review(conn, verdict)
-            reviewed += 1
+                reviewed += 1
         conn.execute(
             "UPDATE raw_messages SET processed = 1 WHERE gmail_msg_id = ?",
             (verdict.gmail_msg_id,),

@@ -1941,6 +1941,37 @@ def cmd_version(conn, a):
         print(f"jt {v['commit']}{'+uncommitted' if v['dirty'] else ''} · schema {v['schema']}")
 
 
+def cmd_ignored(conn, a):
+    """PRD Now-E2: list emails jt set aside as not job-related, or restore one
+    to Review."""
+    if a.ignored_cmd == "restore":
+        if a.review_id is None:
+            sys.exit("error: ignored restore needs a review id")
+        with write_txn(conn):
+            row = conn.execute("SELECT resolved, resolved_note FROM review_queue WHERE id = ?",
+                               (a.review_id,)).fetchone()
+            if not row or not row["resolved"] or not (row["resolved_note"] or "").startswith("auto-ignored"):
+                sys.exit(f"error: #{a.review_id} is not an ignored item")
+            conn.execute("""UPDATE review_queue SET resolved = 0, resolved_note = NULL,
+                            resolved_at = NULL WHERE id = ?""", (a.review_id,))
+        print(f"restored #{a.review_id} to review")
+        return
+    rows = conn.execute(
+        """SELECT q.id, m.received_on, m.sender, m.subject FROM review_queue q
+           LEFT JOIN raw_messages m ON m.gmail_msg_id = q.gmail_msg_id
+           WHERE q.resolved = 1 AND q.resolved_note LIKE 'auto-ignored%'
+           ORDER BY m.received_on DESC, q.id DESC""").fetchall()
+    if not rows:
+        print("Nothing ignored.")
+        return
+    from email.utils import parseaddr
+    print(table(["#", "DATE", "FROM", "SUBJECT"],
+                [[r["id"], r["received_on"] or "-",
+                  parseaddr(r["sender"] or "")[1].rpartition("@")[2] or "-",
+                  (r["subject"] or "-")[:60]] for r in rows]))
+    print("\n  Not job-related, so kept out of Review. Undo with: jt ignored restore <#>")
+
+
 def cmd_where(conn, a):
     print(db_path())
 
@@ -2107,6 +2138,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("version", help="which commit and schema this jt is running")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_version)
+
+    s = sub.add_parser("ignored", help="emails set aside as not job-related; restore one to Review")
+    s.add_argument("ignored_cmd", nargs="?", choices=["restore"])
+    s.add_argument("review_id", nargs="?", type=int)
+    s.set_defaults(fn=cmd_ignored)
 
     s = sub.add_parser("where", help="print database path")
     s.set_defaults(fn=cmd_where)

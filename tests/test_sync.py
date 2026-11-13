@@ -378,3 +378,9 @@ def test_429_still_retries_and_gives_up_after_max_attempts():
     with pytest.raises(_FakeHttpError):
         sync.execute_with_retry(req, sleep=lambda s: None, rand=lambda: 0.0)
     assert req.calls == sync.MAX_ATTEMPTS
+
+
+def test_default_query_covers_platforms_seen_in_real_missed_mail():
+    """The 90-day audit found missed mail from CodeSignal and Hireflix."""
+    q = sync.gmail_query("jobsearch", "2026-11-01", None)
+    assert "from:codesignal" in q and "from:hireflix" in q

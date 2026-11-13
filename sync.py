@@ -29,7 +29,7 @@ import jt
 GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 DEFAULT_LABEL = "jobsearch"
 RECRUITING_SENDERS = (
-    "codesignal hackerrank hirevue modernhire karat coderpad testgorilla "
+    "codesignal hackerrank hirevue hireflix modernhire karat coderpad testgorilla "
     "calendly goodtime gem paradox myinterview"
 ).split()
 RECRUITING_SUBJECTS = ("assessment", "interview", "availability", "schedule", "next steps", "invited")
