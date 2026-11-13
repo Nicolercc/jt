@@ -12,14 +12,19 @@ meantime is to route the proposal to the review queue.
 """
 
 # from_status -> set of event kinds legally appendable next
+#
+# 2026-11-13 (Nicole): "ghosted" (no response) is allowed from every stage
+# through the final round, so a long-silent process can be closed honestly.
+# Not after an offer: an offer is a response. Classifier "ghosted" proposals
+# still go to review (DESIGN D3).
 TRANSITIONS: dict[str, set[str]] = {
     "applied": {"confirmed", "response", "screen", "rejected", "ghosted", "withdrawn"},
     "confirmed": {"response", "screen", "rejected", "ghosted", "withdrawn"},
-    "response": {"screen", "tech", "rejected", "withdrawn"},
-    "screen": {"tech", "onsite", "rejected", "withdrawn"},
-    "tech": {"onsite", "final", "rejected", "withdrawn"},
-    "onsite": {"final", "offer", "rejected", "withdrawn"},
-    "final": {"offer", "rejected", "withdrawn"},
+    "response": {"screen", "tech", "rejected", "ghosted", "withdrawn"},
+    "screen": {"tech", "onsite", "rejected", "ghosted", "withdrawn"},
+    "tech": {"onsite", "final", "rejected", "ghosted", "withdrawn"},
+    "onsite": {"final", "offer", "rejected", "ghosted", "withdrawn"},
+    "final": {"offer", "rejected", "ghosted", "withdrawn"},
     "offer": {"accepted", "rejected", "withdrawn"},
 
     # Terminal. Nothing follows. Not "unlikely" -- forbidden.
