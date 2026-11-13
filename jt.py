@@ -973,6 +973,16 @@ def today_snapshot(conn, today: date, now: datetime, tz: ZoneInfo) -> dict:
     stats = review_queue_stats(conn, now_utc)
     top = conn.execute("""SELECT id, reason FROM review_queue WHERE resolved = 0
                           ORDER BY created_at, id LIMIT 1""").fetchone()
+    recorded = [
+        dict(event_id=r["id"], company=r["company"], role=r["role"], kind=r["kind"],
+             occurred_on=r["occurred_on"], gmail_url=gmail_url(r["gmail_msg_id"]))
+        for r in conn.execute("""
+            SELECT e.id, a.company, a.role, e.kind, e.occurred_on, e.gmail_msg_id
+            FROM events e JOIN applications a ON a.id = e.application_id
+            WHERE e.gmail_msg_id IS NOT NULL
+            ORDER BY e.created_at DESC, e.id DESC LIMIT 3
+        """)
+    ]
     return {
         "schema_version": TODAY_SCHEMA_VERSION,
         "generated_at": _utc_iso(now),
@@ -982,6 +992,7 @@ def today_snapshot(conn, today: date, now: datetime, tz: ZoneInfo) -> dict:
                       "sync_error": sync_error_state()},
         "actions": actions,
         "suggestions": suggestions,
+        "recorded": recorded,
         "review": {"pending": stats["total"], "oldest_days": stats["oldest_age_days"],
                    "top": {"review_id": top["id"], "reason": top["reason"]} if top else None},
     }

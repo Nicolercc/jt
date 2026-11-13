@@ -14,7 +14,7 @@ import jt
 
 NY = ZoneInfo("America/New_York")
 TOP_KEYS = {"schema_version", "generated_at", "badge", "freshness", "actions",
-            "suggestions", "review"}
+            "suggestions", "review", "recorded"}
 ACTION_KEYS = {"action_id", "application_id", "company", "role", "description", "due",
                "overdue", "origin", "reason", "gmail_msg_id", "gmail_url"}
 SUGGESTION_KEYS = {"application_id", "company", "role", "kind", "reason"}
@@ -214,3 +214,17 @@ def test_cli_review_dismiss_speaks_json(conn, capsys):
     jt.main_args(["review", "dismiss", "1", "--json"])
     assert json.loads(capsys.readouterr().out) == {"ok": True, "review_id": 1, "resolved": True,
                                                    "event_id": None}
+
+def test_recorded_shows_latest_email_events_only(conn):
+    application_id = app(conn)
+    with jt.write_txn(conn):
+        conn.executemany(
+            "INSERT INTO events (application_id, occurred_on, kind, gmail_msg_id) "
+            "VALUES (?, '2026-08-05', 'confirmed', ?)",
+            [(application_id, source) for source in ("msg1", "msg2", "msg3", "msg4", None)],
+        )
+    recorded = snapshot(conn)["recorded"]
+    assert [event["event_id"] for event in recorded] == [4, 3, 2]
+    assert recorded[0]["gmail_url"] == jt.gmail_url("msg4")
+    assert recorded[0]["company"] == "Acme"
+    assert recorded[0]["role"] == "Engineer"
