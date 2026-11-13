@@ -137,23 +137,59 @@ refresh();
 </script></body></html>"""
 
 
-def make_handler(path: Path, bodies: dict[str, str] | None = None):
+def make_handler(path: Path, db_paths: list[Path] | None = None):
+    """Request handler for one label CSV. Bodies are read from `db_paths` on
+    every page load, so messages exported while the server runs show up.
+
+    The page holds full job-search emails, so it answers only requests that
+    come from your own tab:
+      - Host must be 127.0.0.1:<port> or localhost:<port>. This blocks DNS
+        rebinding, where a website's domain is pointed at 127.0.0.1 so the
+        browser treats this server as that site and lets it read the page.
+      - Saves must be application/json, and any Origin must be this server.
+        A cross-site text/plain POST skips the CORS preflight, so the server
+        has to refuse it itself.
+    """
+    dbs = list(db_paths or [])
+
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code: int, body: str, ctype: str = "text/plain") -> None:
             data = body.encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", f"{ctype}; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(data)
 
+        def _own_origins(self) -> set[str]:
+            port = self.server.server_address[1]  # type: ignore[index]
+            return {f"127.0.0.1:{port}", f"localhost:{port}"}
+
+        def _host_ok(self) -> bool:
+            return (self.headers.get("Host") or "").strip().lower() in self._own_origins()
+
+        def _origin_ok(self) -> bool:
+            origin = self.headers.get("Origin")
+            if origin is None:          # non-browser clients (curl, tests) send none
+                return True
+            return origin.lower() in {f"http://{h}" for h in self._own_origins()}
+
         def do_GET(self):  # noqa: N802
+            if not self._host_ok():
+                return self._send(403, "forbidden host")
             if self.path != "/":
                 return self._send(404, "not found")
             _, rows = read_rows(path)
-            self._send(200, render(rows, bodies), "text/html")
+            self._send(200, render(rows, load_bodies(dbs)), "text/html")
 
         def do_POST(self):  # noqa: N802
+            if not self._host_ok() or not self._origin_ok():
+                return self._send(403, "forbidden origin")
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                return self._send(415, "saves must be application/json")
             if self.path != "/save":
                 return self._send(404, "not found")
             fields, rows = read_rows(path)
@@ -188,9 +224,9 @@ def main() -> None:
                         "(default: ~/.jobtrack/jobs.db and evals/raw/pool.db if present)")
     args = p.parse_args()
     path = Path(args.csv).resolve()
-    bodies = load_bodies(args.db or list(DEFAULT_DBS))
-    print(f"Loaded full text for {len(bodies)} emails")
-    server = HTTPServer(("127.0.0.1", args.port), make_handler(path, bodies))
+    dbs = args.db or list(DEFAULT_DBS)
+    print(f"Full text available for {len(load_bodies(dbs))} emails")
+    server = HTTPServer(("127.0.0.1", args.port), make_handler(path, dbs))
     print(f"Labeling {path.name} at http://127.0.0.1:{args.port}  (Ctrl-C to stop)")
     server.serve_forever()
 
