@@ -240,6 +240,10 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
     lines.append("---")
     lines.append(f"Gmail synced {ago(fresh['gmail_synced_at'], now)} · "
                  f"classified {ago(fresh['classified_at'], now)} | size=11 color=gray")
+    version = snap.get("version") or {}
+    if version:
+        lines.append(f"jt {clean(version.get('commit'), 12)} · schema {version.get('schema')}"
+                     " | size=10 color=gray")
     lines.append("Refresh | refresh=true")
     lines.append("Quit jt panel | " + action("quit", refresh=False))
     return lines
