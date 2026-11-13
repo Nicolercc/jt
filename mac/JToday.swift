@@ -21,6 +21,12 @@ struct Snapshot: Decodable {
         var gmailSyncedAt: String?
     }
 
+    struct ReviewSummary: Decodable {
+        struct Item: Decodable { var reviewId: Int }
+        var top: Item?
+    }
+
+    var review: ReviewSummary
     var schemaVersion: Int
     var generatedAt: String
     var actions: [Action]
@@ -145,6 +151,10 @@ struct JToday: App {
                                     .disabled(model.busy || model.uncertain.contains(action.id))
                                 }
                             }
+                        }
+                        if let item = snapshot.review.top {
+                            ReviewSection(reviewID: item.reviewId)
+                                .id(item.reviewId)
                         }
                     } else if model.busy {
                         ProgressView("Loading recruiter actions")
