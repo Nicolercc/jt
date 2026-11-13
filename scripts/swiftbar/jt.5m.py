@@ -191,10 +191,10 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
         lines.append(f"{SYNC_PROBLEMS.get(fresh['sync_error'], 'Gmail sync problem')} | color=red")
         lines.append("---")
 
-    if snap.get("failure"):
-        failure = snap["failure"]
-        lines.append(clean(failure["message"], 100))
-        if not cached:
+    failure = snap.get("failure")
+    if failure and _recent(failure.get("ts"), now, FAILURE_TTL_MINUTES):
+        lines.append(f"⚠ {clean(failure['message'], 100)} | color=red")
+        if not cached and failure["args"][0] in RETRYABLE_CLICKS:
             lines.append("Retry | " + action(*failure["args"]))
     actions = snap["actions"]
     if actions:
@@ -220,16 +220,28 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
     review = snap["review"]
     if review["pending"]:
         lines.append("---")
-        top = review["top"]["reason"] if review["top"] else ""
-        lines.append(f"{review['pending']} to review | {action('review', refresh=False)}")
-        if top:
-            lines.append(f"Oldest: {clean(top, 70)} | size=11 color=gray")
+        lines.append(f"Needs your decision ({review['pending']}) | size=12")
+        items = review.get("items") or []
+        for it in items[:MAX_REVIEW_ITEMS]:
+            title = clean(it.get("subject") or "(no subject)", 48)
+            lines.append(f"{title} | size=14 refresh=true")
+            lines.append(f"{clean(it.get('from') or '-', 30)} · {clean(it['summary'], 70)} | size=11 color=gray")
+            if not cached:
+                for c in it.get("choices", []):
+                    lines.append(f"--✓ {clean(c['label'], 70)} | "
+                                 + action("approve", str(it["review_id"]), str(c["app_id"])))
+                lines.append("--Dismiss: not needed | " + action("dismiss-review", str(it["review_id"])))
+            if it.get("gmail_url"):
+                lines.append(f"--Open email | {action('open', it['gmail_url'], refresh=False)}")
+        if len(items) > MAX_REVIEW_ITEMS or review["pending"] > len(items):
+            more = review["pending"] - min(len(items), MAX_REVIEW_ITEMS)
+            lines.append(f"+{more} more in Terminal | {action('review', refresh=False)}")
 
     if snap["suggestions"]:
         lines.append("---")
         lines.append("Suggestions | size=12")
         for s in snap["suggestions"][:MAX_ACTIONS]:
-            lines.append(f"{clean(s['kind'].title(), 12)}: {clean(s['company'], 30)} · {clean(s.get('role'), 30)} · optional | size=13")
+            lines.append(f"{clean(s['kind'].title(), 12)}: {clean(s['company'], 30)} · {clean(s.get('role'), 30)} · optional | size=13 refresh=true")
             lines.append(f"--{clean(s['reason'], 70)} | color=gray")
             if not cached:
                 app_id = str(s["application_id"])
@@ -250,6 +262,37 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
 
 
 # ---------------------------------------------------------------- clicks
+
+FAILURE_TTL_MINUTES = 15
+RETRYABLE_CLICKS = {"done", "snooze", "remind", "dismiss-suggestion"}
+MAX_REVIEW_ITEMS = 8
+
+
+def _recent(ts: str | None, now: datetime, minutes: int) -> bool:
+    """True if ts is within `minutes` of now. Unknown age counts as old, so a
+    banner without a timestamp can never stick around forever."""
+    if not ts:
+        return False
+    try:
+        then = datetime.fromisoformat(ts)
+    except ValueError:
+        return False
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)
+    return timedelta(0) <= now - then <= timedelta(minutes=minutes)
+
+
+def failure_message(snapshot: dict, cmd: str, rest: list[str], error: str | None) -> str:
+    detail = f": {error}" if error else ". Try again"
+    if cmd == "done":
+        row: dict = next((a for a in snapshot.get("actions", []) if str(a["action_id"]) == rest[0]), {})
+        return f"Couldn't mark '{clean(row.get('description') or 'that task', 40)}' done{detail}"
+    if cmd == "approve":
+        return f"Couldn't record that update{detail}"
+    if cmd == "dismiss-review":
+        return f"Couldn't dismiss that review item{detail}"
+    return f"Couldn't do that{detail}"
+
 
 def tomorrow_at(hhmm: str, today: date | None = None) -> str:
     return f"{((today or date.today()) + timedelta(days=1)).isoformat()} {hhmm}"
@@ -277,8 +320,13 @@ def handle_click(argv: list[str]) -> int:
                 "--reason", "Scheduled from SwiftBar suggestion"]
     elif cmd == "dismiss-suggestion":
         args = ["action", cmd, *rest]
+    elif cmd == "approve":
+        args = ["review", "approve", rest[0], "--app-id", rest[1]]
+    elif cmd == "dismiss-review":
+        args = ["review", "dismiss", rest[0], "--note", "dismissed from the menu bar"]
     else:
         return 2
+    reply: dict = {}
     try:
         result = jt(*args, "--json")
         reply = json.loads(result.stdout)
@@ -292,11 +340,9 @@ def handle_click(argv: list[str]) -> int:
         if ok:
             snapshot.pop("failure", None)
         else:
-            row: dict = next((a for a in snapshot["actions"] if str(a["action_id"]) == rest[0]), {})
-            label = clean(row.get("description") or "this task")
-            message = (f"Couldn't mark '{label}' done. Try again" if cmd == "done" else
-                       f"Couldn't complete the {cmd} request. Try again")
-            snapshot["failure"] = {"message": message, "args": [cmd, *rest]}
+            snapshot["failure"] = {"message": failure_message(snapshot, cmd, rest, reply.get("error")),
+                                   "args": [cmd, *rest],
+                                   "ts": datetime.now(timezone.utc).isoformat()}
         save_cache(snapshot)
     if not ok:
         log_usage("click_failed", action=cmd)

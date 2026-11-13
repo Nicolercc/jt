@@ -4,7 +4,7 @@ contract, never leak company names into the menu-bar title, and log usage."""
 import importlib.util
 import json
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -16,6 +16,9 @@ PLUGIN = ROOT / "scripts/swiftbar/jt.5m.py"
 @pytest.fixture
 def plugin(tmp_path, monkeypatch):
     monkeypatch.setenv("JT_USAGE_LOG", str(tmp_path / "usage.log"))
+    # Never touch the real ~/.jobtrack/panel-cache.json from tests: a test once
+    # left a fake "Couldn't mark 'this task' done" banner in the user's menu.
+    monkeypatch.setenv("JT_PANEL_CACHE", str(tmp_path / "panel-cache.json"))
     monkeypatch.setenv("JT_PYTHON", sys.executable)
     monkeypatch.setenv("JT_REPO", str(ROOT))
     spec = importlib.util.spec_from_file_location("jt_swiftbar", PLUGIN)
@@ -98,13 +101,16 @@ def test_sync_problems_are_shown_in_words_and_marked_in_title(plugin, err, text)
     assert any(text in x for x in lines)
 
 
-def test_review_count_and_oldest_reason(plugin):
+def test_review_count_without_items_points_to_terminal(plugin):
+    """An older jt without review items still shows the count, with a way in,
+    and never shows raw internal reasons."""
     s = snap(badge={"due": 0, "reviews": 2},
              review={"pending": 2, "oldest_days": 1,
                      "top": {"review_id": 4, "reason": "needs your confirmation: rejected for #3"}})
     lines = plugin.render(s, None, NOW)
-    assert any(x.startswith("2 to review") for x in lines)
-    assert any("needs your confirmation" in x for x in lines)
+    assert any(x.startswith("Needs your decision (2)") for x in lines)
+    assert any(x.startswith("+2 more in Terminal") for x in lines)
+    assert not any("needs your confirmation" in x for x in lines)
 
 
 def test_pipes_and_newlines_cannot_break_the_menu(plugin):
@@ -192,7 +198,8 @@ def test_done_retry_recognizes_already_completed(plugin, tmp_path, monkeypatch):
     ])
     monkeypatch.setattr(plugin, "jt", lambda *args: next(replies))
     assert plugin.handle_click(["done", "1"]) == 1
-    assert any("Retry" in line for line in plugin.render(plugin.read_cache(), None, NOW))
+    now = datetime.now(timezone.utc)
+    assert any("Retry" in line for line in plugin.render(plugin.read_cache(), None, now))
     assert plugin.handle_click(["done", "1"]) == 0
     assert "failure" not in plugin.read_cache()
 
@@ -239,3 +246,87 @@ def test_quit_does_not_use_applescript(plugin, monkeypatch):
     assert plugin.handle_click(["quit"]) == 0
     assert calls and calls[0][0] != "osascript"
     assert "osascript" not in PLUGIN.read_text()
+
+
+
+# ---------------------------------------------------------------- review UX
+
+def test_plugin_tests_never_use_the_real_cache(plugin, tmp_path):
+    assert str(plugin.CACHE).startswith(str(tmp_path))
+
+
+def test_old_failure_banner_expires(plugin):
+    old = (NOW - timedelta(minutes=30)).isoformat()
+    fresh = (NOW - timedelta(minutes=2)).isoformat()
+    stale = plugin.render(snap(failure={"message": "Couldn't mark 'X' done. Try again",
+                                        "args": ["done", "1"], "ts": old}), None, NOW)
+    assert not any("Couldn't" in x for x in stale)
+    recent = plugin.render(snap(failure={"message": "Couldn't mark 'X' done. Try again",
+                                         "args": ["done", "1"], "ts": fresh}), None, NOW)
+    assert any("Couldn't" in x for x in recent)
+
+
+def item(rid=7, choices=None, url="https://mail.google.com/mail/u/0/#all/abc"):
+    return {"review_id": rid, "received_on": "2026-09-05", "from": "hireflix.com",
+            "subject": "Thank you for completing your video interview",
+            "summary": "Looks like an interview or screen invite from Ramp, but jt isn't sure.",
+            "gmail_url": url,
+            "choices": choices if choices is not None else
+                       [{"label": "Record interview for Ramp · CX Agent", "app_id": 10}]}
+
+
+def test_review_items_render_in_plain_english_with_one_click_choices(plugin):
+    s = snap(badge={"due": 0, "reviews": 1},
+             review={"pending": 1, "oldest_days": 0, "top": None, "items": [item()]})
+    lines = plugin.render(s, None, NOW)
+    text = "\n".join(lines)
+    assert "Needs your decision" in text
+    assert "Thank you for completing your video interview" in text
+    assert "jt isn't sure" in text
+    assert "classifier returned" not in text and "null" not in text
+    approve = next(x for x in lines if "Record interview for Ramp" in x)
+    assert 'param1=approve param2="7" param3="10"' in approve
+    dismiss = next(x for x in lines if x.startswith("--Dismiss"))
+    assert 'param1=dismiss-review param2="7"' in dismiss
+    assert any(x.startswith("--Open email") for x in lines)
+
+
+def test_review_item_with_no_safe_choice_offers_dismiss_and_email_only(plugin):
+    s = snap(badge={"due": 0, "reviews": 1},
+             review={"pending": 1, "oldest_days": 0, "top": None, "items": [item(choices=[])]})
+    lines = plugin.render(s, None, NOW)
+    assert not any("param1=approve" in x for x in lines)
+    assert any(x.startswith("--Dismiss") for x in lines)
+
+
+def test_rows_with_submenus_are_not_greyed_out(plugin):
+    """SwiftBar greys out rows with no action; give parents a harmless one."""
+    s = snap(badge={"due": 0, "reviews": 1},
+             review={"pending": 1, "oldest_days": 0, "top": None, "items": [item()]},
+             suggestions=[{"application_id": 9, "company": "Ramp", "role": "CX Agent",
+                           "kind": "FOLLOW UP", "reason": "11 business days quiet"}])
+    lines = plugin.render(s, None, NOW)
+    parents = [x for x in lines if x.startswith(("Thank you for completing", "Follow Up:"))]
+    assert parents and all("refresh=true" in x for x in parents)
+
+
+def test_approve_and_dismiss_clicks_call_jt_review(plugin, monkeypatch):
+    calls = []
+    class R:
+        returncode, stdout, stderr = 0, json.dumps({"ok": True}), ""
+    monkeypatch.setattr(plugin, "jt", lambda *a, **k: calls.append(a) or R())
+    assert plugin.handle_click(["approve", "7", "10"]) == 0
+    assert plugin.handle_click(["dismiss-review", "7"]) == 0
+    assert calls[0] == ("review", "approve", "7", "--app-id", "10", "--json")
+    assert calls[1] == ("review", "dismiss", "7", "--note", "dismissed from the menu bar", "--json")
+
+
+def test_failed_approve_shows_the_reason_and_expires(plugin, monkeypatch):
+    class R:
+        returncode, stdout, stderr = 1, json.dumps({"ok": False, "error": "illegal transition tech -> screen"}), ""
+    monkeypatch.setattr(plugin, "jt", lambda *a, **k: R())
+    plugin.save_cache(snap())
+    assert plugin.handle_click(["approve", "7", "10"]) == 1
+    cached = plugin.read_cache()
+    assert "illegal transition" in cached["failure"]["message"]
+    assert cached["failure"]["ts"]
