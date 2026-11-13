@@ -82,7 +82,7 @@ Job-search updates are scattered across Gmail, assessment platforms and memory. 
 ### P1: v1 polish
 | # | Requirement | Status |
 |---|---|---|
-| R9 | Review in one place: email quote, proposed change, candidate roles, one-key approve or dismiss | ❌ Next |
+| R9 | Review in one place: plain-English summary, only legal choices, one-click Record / Dismiss / Open email in the menu bar; readable `jt review` | ✅ #36 (pulled from Next into Now after real use showed Review was unusable) |
 | R10 | "Why?" for every automatic change (`jt explain`) | ❌ Next |
 | R11 | Follow-up suggestions age out to CLOSE OUT sensibly (no "50 days quiet" nudges) | ❌ Next |
 | R12 | A reminder email for an existing open task updates that task instead of adding a duplicate (found in the E1 replay: invite + reminder made 2 tasks) | ❌ Next |
