@@ -109,13 +109,35 @@ jt action list                   # pending actions; done/snooze/dismiss by ACT i
 jt action snooze 5 --until "2026-08-22 09:00"
 jt today                         # due actions first, then follow-up suggestions
 jt today --json                  # versioned read model for a menu-bar panel (DESIGN D5)
+jt review                        # what needs your decision, in plain English, with exact commands
+jt review approve 7 --app-id 3   # record an update; add-app 7 --lane ops adds a new application
+jt ignored                       # non-job mail kept out of Review; `jt ignored restore <#>` undoes
+jt candidates                    # applications found in your email; accept <id> --lane ops / reject <id>
+jt notify --dry-run              # alerts the hourly job would send (sync trouble, due tasks, new apps)
+jt version                       # which commit and schema this jt is running
 jt rm 4                          # only works while it has zero events
 jt export --lane swe --out pursuit.csv
 jt backup ~/jobtrack-backups      # timestamped; add --no-bodies for cloud folders
 jt verify-backup ~/jobtrack-backups/jobs-2026-08-21T200000.db
 ```
 
-Daily rhythm, ninety seconds: `jt stale` with coffee, `jt bulk` before bed.
+Daily rhythm, ninety seconds: `jt stale` with coffee, `jt bulk` before bed. Or
+skip the terminal: the menu-bar panel (`scripts/swiftbar/README.md`) shows what's
+due, what needs a decision, new applications, and stale ones to close out, each
+with one-click actions.
+
+**Deploying to the checkout launchd runs** is one command, which backs up and
+verifies the database before pulling and checks the hourly job afterwards:
+
+```bash
+scripts/deploy.sh --dry-run   # what would change
+scripts/deploy.sh
+```
+
+Notifications come from `jt notify`, which the hourly job runs first: once per
+event for Gmail sync trouble (after 2 hours), tasks due today or overdue, and new
+applications. `JT_NOTIFY=0` turns them off; `JT_NOTIFY_PRIVATE=1` hides company
+names on the lock screen.
 
 **Put the backup in cron on day one.** The likeliest catastrophic failure here
 is not a race condition, it is `rm -rf ~/.jobtrack`:
