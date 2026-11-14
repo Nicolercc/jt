@@ -240,8 +240,8 @@ def test_label_page_shows_full_body_escaped_and_gmail_link():
 def test_check_flags_spelling_variants_and_missing_fields(tmp_path):
     csv_path = tmp_path / "label-me.csv"
     write_csv(csv_path, [
-        row(1, "g1", "confirmed", "Samba TV", "Coordinator"),
-        row(2, "g2", "rejected", "SambaTV", "Coordinator"),
+        row(1, "g1", "confirmed", "Example Media", "Coordinator"),
+        row(2, "g2", "rejected", "ExampleMedia", "Coordinator"),
         row(3, "g3", "screen", "Acme Inc.", "Software Engineer"),
         row(4, "g4", "tech", "Acme", "Software Engineer I"),
         row(5, "g5", "offer", "Globex", ""),
@@ -249,7 +249,7 @@ def test_check_flags_spelling_variants_and_missing_fields(tmp_path):
         row(7, "g7"),
     ])
     c = dataset.check_labels(csv_path)
-    assert ("Samba TV", "SambaTV") in c["company_pairs"]
+    assert ("Example Media", "ExampleMedia") in c["company_pairs"]
     assert ("Acme", "Acme Inc.") in c["company_pairs"]
     assert c["problems"] == ["row 5: offer needs both company and role"]
     assert c["by_kind"]["(not labeled yet)"] == 1

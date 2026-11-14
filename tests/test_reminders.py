@@ -14,7 +14,7 @@ def conn(tmp_path, monkeypatch):
     c = jt.connect()
     with jt.write_txn(c):
         c.execute("INSERT INTO applications (id, company, role, lane, applied_on) "
-                  "VALUES (10, 'Ramp', 'CX Agent', 'ops', '2026-08-28')")
+                  "VALUES (10, 'Northstar', 'Support Agent', 'ops', '2026-08-28')")
     yield c
     c.close()
 
@@ -34,16 +34,16 @@ def actions(conn):
 
 
 def test_reminder_for_an_open_task_does_not_duplicate_it(conn):
-    email_task(conn, "invite", "2026-08-28", "Complete Ramp Assessment on CodeSignal")
-    email_task(conn, "reminder", "2026-09-02", "Complete Ramp Assessment on CodeSignal")
+    email_task(conn, "invite", "2026-08-28", "Complete Northstar Assessment on CodeSignal")
+    email_task(conn, "reminder", "2026-09-02", "Complete Northstar Assessment on CodeSignal")
     rows = actions(conn)
     assert len(rows) == 1
     assert "later email (2026-09-02)" in rows[0]["reason"]
 
 
 def test_reminder_with_an_explicit_deadline_updates_the_task(conn):
-    email_task(conn, "invite", "2026-08-28", "Complete Ramp assessment on CodeSignal")
-    email_task(conn, "reminder", "2026-09-02", "Complete the Ramp assessment on CodeSignal",
+    email_task(conn, "invite", "2026-08-28", "Complete Northstar assessment on CodeSignal")
+    email_task(conn, "reminder", "2026-09-02", "Complete the Northstar assessment on CodeSignal",
                body="Please finish by Sep 4, 5:00 PM PT.", due_text="by Sep 4, 5:00 PM PT",
                due_iso="2026-09-04T17:00", due_tz="America/Los_Angeles")
     [row] = actions(conn)
@@ -52,24 +52,24 @@ def test_reminder_with_an_explicit_deadline_updates_the_task(conn):
 
 
 def test_reminder_without_a_deadline_keeps_the_existing_deadline(conn):
-    email_task(conn, "invite", "2026-08-28", "Complete Ramp assessment",
+    email_task(conn, "invite", "2026-08-28", "Complete Northstar assessment",
                body="Finish by Sep 4, 5:00 PM PT.", due_text="by Sep 4, 5:00 PM PT",
                due_iso="2026-09-04T17:00", due_tz="America/Los_Angeles")
-    email_task(conn, "reminder", "2026-09-02", "Complete Ramp assessment")
+    email_task(conn, "reminder", "2026-09-02", "Complete Northstar assessment")
     [row] = actions(conn)
     assert row["due_at_utc"] == "2026-09-05T00:00:00Z"
 
 
 def test_reminder_for_a_recently_closed_task_is_skipped(conn):
-    email_task(conn, "invite", "2026-08-28", "Complete Ramp assessment")
+    email_task(conn, "invite", "2026-08-28", "Complete Northstar assessment")
     with jt.write_txn(conn):
         conn.execute("UPDATE actions SET state = 'done', closed_at = '2026-09-01 10:00:00'")
-    email_task(conn, "reminder", "2026-09-02", "Complete Ramp assessment")
+    email_task(conn, "reminder", "2026-09-02", "Complete Northstar assessment")
     assert len(actions(conn)) == 1
 
 
 def test_a_different_task_is_still_its_own_task(conn):
-    email_task(conn, "invite", "2026-08-28", "Complete Ramp assessment")
+    email_task(conn, "invite", "2026-08-28", "Complete Northstar assessment")
     email_task(conn, "onsite", "2026-09-10", "Schedule your onsite interview")
     assert len(actions(conn)) == 2
 

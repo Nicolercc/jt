@@ -16,11 +16,11 @@ jt is the place you look **before** searching Gmail for job-search news. It reco
 
 Job-search updates are scattered across Gmail, assessment platforms and memory. The costly failures are quiet.
 
-**The Ramp case** (real data): 8 Ramp emails arrived, and **4 never reached the tracker**: a CodeSignal assessment, a Hireflix video interview, an interview reminder, and an interview-complete note. Even the ones that did arrive couldn't become a task, because jt had no email → action path. The menu then showed a misleading "Ramp · 50 business days quiet". A 90-day audit found **13 missed job emails** in total.
+**The Northstar case** (real data): 8 Northstar emails arrived, and **4 never reached the tracker**: a CodeSignal assessment, a Hireflix video interview, an interview reminder, and an interview-complete note. Even the ones that did arrive couldn't become a task, because jt had no email → action path. The menu then showed a misleading "Northstar · 50 business days quiet". A 90-day audit found **13 missed job emails** in total.
 
 | Today's workaround | Result |
 |---|---|
-| Search Gmail, remember deadlines, scan the inbox | Missed the Ramp assessment; no single view of what needs doing |
+| Search Gmail, remember deadlines, scan the inbox | Missed the Northstar assessment; no single view of what needs doing |
 | Existing trackers (Teal, Huntr, JobFlow, Trackr…) | Track *status* columns. None show *why* a status changed or turn deadlines into tasks with evidence. |
 
 ## 3. Users
@@ -57,7 +57,7 @@ Job-search updates are scattered across Gmail, assessment platforms and memory. 
 
 | Metric | Target | Source | Current |
 |---|---|---|---|
-| **Explicit deadlines missed** (north star) | 0 per week | Test-week log + audit | Unknown; Ramp was missed before the fixes |
+| **Explicit deadlines missed** (north star) | 0 per week | Test-week log + audit | Unknown; Northstar was missed before the fixes |
 | Job emails missing from jt | 0 per week | `jt sync --audit` | 13 in 90 days (before widening); 0 expected now |
 | Wrong auto-updates | ≤ 2 per 100 emails | Eval holdout | Unmeasured (n = 5) |
 | Wrong terminal auto-commits | 0 | Eval + live | 0 (D3 caught a wrong "ghosted" live) |
@@ -71,7 +71,7 @@ Job-search updates are scattered across Gmail, assessment platforms and memory. 
 | # | Requirement | Status |
 |---|---|---|
 | R1 | Sync covers ATS, assessment and interview mail; audit proves coverage | ✅ #25, deployed, widened |
-| R2 | Email request → one task with a validated deadline and source link | ✅ #26, #28 (live-verified on Ramp/Hireflix) |
+| R2 | Email request → one task with a validated deadline and source link | ✅ #26, #28 (live-verified on Northstar/Hireflix) |
 | R3 | Consequential changes (rejection, offer…) always need confirmation | ✅ #15 |
 | R4 | Menu: due tasks, reviews, suggestions; every row has a verb; failures visible | ✅ #16, #27 |
 | R5 | Two roles at one company resolve automatically when the evidence allows | ✅ #30 |
@@ -107,7 +107,7 @@ Native star app (Finder launch, notifications), Apple Reminders for phone reach,
 | M2 Correctness core (D1, D2, D3, D6) | ✅ Done | Live |
 | M3 Template parsers | ⏸ Deprioritized | Real failures are role ambiguity and coverage, not templates. Revisit with label data. |
 | M4 Read model, writes, backups (D5, D7) | ✅ Done | Live |
-| *Added:* coverage + email → action | ✅ Done | Built because the Ramp trace demanded it; live-verified |
+| *Added:* coverage + email → action | ✅ Done | Built because the Northstar trace demanded it; live-verified |
 | M5 Test week | 🟡 Panel ready; **week not started** | 10 menu opens on day 1, no clicks yet |
 | M6 Go / no-go on native | ⏳ Waiting on M5 | Native drafts #21/#22 exist ahead of this gate; frozen |
 | M7 Demo + write-up | ⏳ | Outline exists: `docs/WRITEUP.md` (local) |
@@ -120,11 +120,11 @@ Native star app (Finder launch, notifications), Apple Reminders for phone reach,
 
 | # | Owner | Task | Done when |
 |---|---|---|---|
-| **Now-1** | Nicole | Clear the 11 review items (`jt review`) | Queue = 0; both Ramp assessments on CX Agent |
+| **Now-1** | Nicole | Clear the 11 review items (`jt review`) | Queue = 0; both Northstar assessments on Support Agent |
 | **Now-2** | Nicole | Start the test week: use the panel daily, note every time you fall back to Gmail and why | 5 active days logged |
 | **Now-3** | Nicole | Label the 117 emails in 3–4 sittings; prioritize deadline and assessment emails | `evals.dataset check` shows ≥ 150 labeled, no spelling variants |
 | **Now-4** | Nicole | Check the Google OAuth publishing status; switch Testing → In production (free) | No 7-day sign-in expiry |
-| **Now-E1** | Eng | ✅ **Same-company role resolution** (#30). The planned "±3 days" rule failed on real data (both Ramp roles were applied to and emailed on the same day). Replaced by evidence rules for progress emails only: skip closed applications; otherwise pick the only application with an active process; else review. The inference is shown in the task's reason. | Done: both real Ramp CodeSignal cases resolve to CX Agent; genuine ties still go to review |
+| **Now-E1** | Eng | ✅ **Same-company role resolution** (#30). The planned "±3 days" rule failed on real data (both Northstar roles were applied to and emailed on the same day). Replaced by evidence rules for progress emails only: skip closed applications; otherwise pick the only application with an active process; else review. The inference is shown in the task's reason. | Done: both real Northstar CodeSignal cases resolve to Support Agent; genuine ties still go to review |
 | **Now-E2** | Eng | ✅ **Ignored bucket** (#32): no-proposal mail from non-recruiting, non-applied senders goes to `jt ignored` (restorable). Model failures, failed checks and unknown senders still go to Review. | Done: replay of the real queue ignored Dior, GitHub and Tailscale and kept the CodeSignal and Hireflix mail; Review 9 → 6 |
 | **Now-E3** | Eng | ✅ **`jt version` + `scripts/deploy.sh`** (#33): refuses a dirty prod checkout; backs up and verifies before pulling; runs the job and checks success; `--dry-run`. Version shows in the panel footer. | Done: tests prove refusal, dry run and backup-failure stop; used for this deploy |
 | **Now-E4** | Eng + Nicole | 🟡 Hireflix default ✅ (#34). **Waiting on Nicole:** close #17, #18 and #20 (they serve the frozen native app or are a prototype); #19 (stale-stage guard) is worth a careful rebase, since it conflicts with current jt.py; #21/#22 stay frozen until M6; delete the 5 merged local copies (a safety check blocks me from deleting folders). | ≤ 1 dev copy + production; no stale PRs |

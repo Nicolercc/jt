@@ -18,8 +18,8 @@ def conn(tmp_path, monkeypatch):
     c = jt.connect()
     with jt.write_txn(c):
         c.execute("INSERT INTO applications (id, company, role, lane, applied_on) VALUES "
-                  "(9, 'Ramp', 'CX Associate', 'ops', '2026-08-28'), "
-                  "(10, 'Ramp', 'CX Agent', 'ops', '2026-08-28')")
+                  "(9, 'Northstar', 'Support Associate', 'ops', '2026-08-28'), "
+                  "(10, 'Northstar', 'Support Agent', 'ops', '2026-08-28')")
         c.execute("INSERT INTO events (application_id, occurred_on, kind) VALUES "
                   "(9, '2026-09-08', 'rejected'), (10, '2026-08-28', 'screen')")
     yield c
@@ -36,7 +36,7 @@ def review(conn, msg_id, reason, proposal, sender="no-reply@hireflix.com",
                             "VALUES (?, ?, ?)", (msg_id, json.dumps(proposal), reason)).lastrowid
 
 
-def P(kind, company="Ramp", **extra):
+def P(kind, company="Northstar", **extra):
     return {"gmail_msg_id": "x", "company": company, "role_hint": "", "kind": kind,
             "occurred_on": "2026-09-05", "confidence": 0.6,
             "evidence": "Thank you for taking the time to complete the video interview", **extra}
@@ -62,10 +62,10 @@ def test_low_confidence_names_the_guess_and_offers_only_legal_choices(conn):
         conn.execute("INSERT INTO events (application_id, occurred_on, kind) VALUES (10, '2026-08-29', 'response')")
     review(conn, "m2", "confidence below threshold", P("tech") | {"gmail_msg_id": "m2"})
     [it] = items(conn)
-    assert "an assessment or technical interview from Ramp" in it["summary"]
+    assert "an assessment or technical interview from Northstar" in it["summary"]
     assert "isn't sure" in it["summary"]
     assert [c["app_id"] for c in it["choices"]] == [10]
-    assert it["choices"][0]["label"] == "Record assessment or technical interview for Ramp · CX Agent"
+    assert it["choices"][0]["label"] == "Record assessment or technical interview for Northstar · Support Agent"
 
 
 def test_illegal_for_every_candidate_offers_nothing_to_record(conn):
@@ -79,16 +79,16 @@ def test_confirmation_policy_reads_as_confirm(conn):
     review(conn, "m4", "needs your confirmation: offer for #10 (all other checks passed; DESIGN D3)",
            P("rejected") | {"gmail_msg_id": "m4"})
     [it] = items(conn)
-    assert it["summary"] == "Looks like a rejection from Ramp. Confirm before jt records it."
+    assert it["summary"] == "Looks like a rejection from Northstar. Confirm before jt records it."
 
 
 def test_request_choice_reads_as_a_task(conn):
-    review(conn, "m5", "ambiguous role at Ramp; no role_hint (CX Associate, CX Agent)",
-           P("request", request={"description": "Complete Ramp assessment", "due_text": "",
+    review(conn, "m5", "ambiguous role at Northstar; no role_hint (Support Associate, Support Agent)",
+           P("request", request={"description": "Complete Northstar assessment", "due_text": "",
                                  "due_iso": "", "due_tz": ""}) | {"gmail_msg_id": "m5"})
     [it] = items(conn)
-    assert it["summary"] == "Which Ramp role is this for?"
-    assert [c["label"] for c in it["choices"]] == ["Add task “Complete Ramp assessment” for Ramp · CX Agent"]
+    assert it["summary"] == "Which Northstar role is this for?"
+    assert [c["label"] for c in it["choices"]] == ["Add task “Complete Northstar assessment” for Northstar · Support Agent"]
 
 
 def test_today_json_carries_review_items(conn):
@@ -108,20 +108,20 @@ def test_terminal_review_is_readable(conn, capsys):
 
 # ---------------------------------------------------------------- new application
 
-def td_review(conn, kind="screen", role="Associate Banker II"):
-    return review(conn, "td1", "no application company match for 'TD Bank'",
-                  P(kind, company="TD Bank", role_hint=role) | {
+def td_review(conn, kind="screen", role="Associate II"):
+    return review(conn, "td1", "no application company match for 'Harbor Bank'",
+                  P(kind, company="Harbor Bank", role_hint=role) | {
                       "gmail_msg_id": "td1", "occurred_on": "2026-09-23",
                       "evidence": "Thank you for taking the time to complete the video interview"},
-                  sender="recruiting@td.com", subject="Interview for Associate Banker II at TD Bank")
+                  sender="recruiting@harborbank.example", subject="Interview for Associate II at Harbor Bank")
 
 
 def test_unknown_company_offers_add_as_new_application(conn):
     td_review(conn)
     [it] = items(conn)
-    assert it["summary"] == ("Looks like an interview or screen invite from TD Bank, "
-                             "but you have no application at TD Bank.")
-    assert it["choices"] == [{"label": "Add TD Bank · Associate Banker II as a new application",
+    assert it["summary"] == ("Looks like an interview or screen invite from Harbor Bank, "
+                             "but you have no application at Harbor Bank.")
+    assert it["choices"] == [{"label": "Add Harbor Bank · Associate II as a new application",
                               "new_app": True, "lanes": ["swe", "ops", "comms"]}]
 
 
@@ -143,8 +143,8 @@ def test_add_app_creates_application_and_records_the_update(conn, capsys):
     jt.main_args(["review", "add-app", str(rid), "--lane", "ops", "--json"])
     out = json.loads(capsys.readouterr().out)
     assert out["ok"] and out["resolved"]
-    app = conn.execute("SELECT * FROM applications WHERE company = 'TD Bank'").fetchone()
-    assert (app["role"], app["lane"], app["applied_on"]) == ("Associate Banker II", "ops", "2026-09-23")
+    app = conn.execute("SELECT * FROM applications WHERE company = 'Harbor Bank'").fetchone()
+    assert (app["role"], app["lane"], app["applied_on"]) == ("Associate II", "ops", "2026-09-23")
     assert "applied date unknown" in app["notes"]
     kinds = [r[0] for r in conn.execute("SELECT kind FROM events WHERE application_id = ?", (app["id"],))]
     assert kinds == ["screen"]
@@ -156,20 +156,20 @@ def test_add_app_failure_leaves_nothing_behind(conn, capsys):
     rid = td_review(conn, kind="tech")
     with pytest.raises(SystemExit):
         jt.main_args(["review", "add-app", str(rid), "--lane", "ops", "--json"])
-    assert conn.execute("SELECT COUNT(*) FROM applications WHERE company = 'TD Bank'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM applications WHERE company = 'Harbor Bank'").fetchone()[0] == 0
     assert conn.execute("SELECT resolved FROM review_queue WHERE id = ?", (rid,)).fetchone()[0] == 0
 
 
 # ---------------------------------------------------------------- evidence source
 
 def test_evidence_quoted_from_the_subject_counts(conn, capsys):
-    """Real case (TD Bank): the model quoted the subject line. It is part of the
+    """Real case (Harbor Bank): the model quoted the subject line. It is part of the
     email, so a verbatim subject quote is valid evidence."""
-    rid = review(conn, "td2", "no application company match for 'TD Bank'",
-                 P("screen", company="TD Bank", role_hint="Associate Banker II") | {
+    rid = review(conn, "td2", "no application company match for 'Harbor Bank'",
+                 P("screen", company="Harbor Bank", role_hint="Associate II") | {
                      "gmail_msg_id": "td2", "occurred_on": "2026-09-23",
-                     "evidence": "Interview for Associate Banker II at TD Bank"},
-                 sender="recruiting@td.com", subject="Interview for Associate Banker II at TD Bank",
+                     "evidence": "Interview for Associate II at Harbor Bank"},
+                 sender="recruiting@harborbank.example", subject="Interview for Associate II at Harbor Bank",
                  body="Hello, please pick a time that works for you.")
     assert items(conn)[0]["choices"]
     jt.main_args(["review", "add-app", str(rid), "--lane", "ops", "--json"])
@@ -178,11 +178,11 @@ def test_evidence_quoted_from_the_subject_counts(conn, capsys):
 
 def test_no_choice_is_offered_when_the_evidence_is_not_in_the_email(conn):
     """A shown button must always work: same evidence check as approval."""
-    review(conn, "td3", "no application company match for 'TD Bank'",
-           P("screen", company="TD Bank", role_hint="Associate Banker II") | {
+    review(conn, "td3", "no application company match for 'Harbor Bank'",
+           P("screen", company="Harbor Bank", role_hint="Associate II") | {
                "gmail_msg_id": "td3", "occurred_on": "2026-09-23",
                "evidence": "words that appear nowhere"},
-           sender="recruiting@td.com", subject="Hello", body="Nothing relevant.")
+           sender="recruiting@harborbank.example", subject="Hello", body="Nothing relevant.")
     assert items(conn)[0]["choices"] == []
 
 

@@ -132,7 +132,7 @@ raw_messages ─────────────► classify.py ──► An
 | # | Debt | Impact | Fix |
 |---|---|---|---|
 | 1 | **Classifier evidence is thin:** 23 labeled emails, 5 in the holdout | Accuracy claims can't be trusted yet | Labeling (PRD Now-3) |
-| 2 | **Two roles at one company stall in review** (both Ramp CodeSignal invites) | The flagship case still needs manual work | Same-company role resolution (PRD Now-E1) |
+| 2 | **Two roles at one company stall in review** (both Northstar CodeSignal invites) | The flagship case still needs manual work | Same-company role resolution (PRD Now-E1) |
 | 3 | **Review gets noisy:** "no proposal" non-job mail lands in review | Review fatigue with the wider search | An "ignored" bucket (PRD Now-E2) |
 | 4 | Manual deploy, no `jt version` | Production fell 6 commits behind once | `jt version` + `scripts/deploy.sh` (PRD Now-E3) |
 | 5 | Workspace sprawl: 13 local copies; Codex drafts #17–#22 stale against v8 | Confusion, merge hazards | Prune merged copies; close or rebase the drafts |
