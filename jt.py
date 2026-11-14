@@ -465,6 +465,7 @@ def connect() -> sqlite3.Connection:
     _seed_kinds(conn)
     if _is_legacy(conn):
         _migrate_v1_to_v2(conn)
+    _repair_candidates_table(conn)
     conn.executescript(SCHEMA)
     _ensure_review_columns(conn)
     _migrate_email_actions(conn)
@@ -492,6 +493,33 @@ def _migrate_email_actions(conn) -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS actions_by_email "
             "ON actions (source_gmail_msg_id) WHERE source_gmail_msg_id IS NOT NULL"
         )
+
+
+def _repair_candidates_table(conn) -> None:
+    """An older experiment left application_candidates with an incompatible
+    shape (title, url_key, captured_on...). CREATE TABLE IF NOT EXISTS never
+    fixes that, and the first unknown-company email would then crash every
+    classifier batch. Rebuild it: an empty table is dropped; a table with rows
+    is kept as application_candidates_legacy. Runs once (the new shape has
+    raw_input)."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(application_candidates)")}
+    if not cols or "raw_input" in cols:
+        return
+    conn.commit()
+    with write_txn(conn):
+        # Indexes would move with a renamed table and could collide with the
+        # new table's index names; they're derived data, so drop them.
+        for (name,) in conn.execute(
+                """SELECT name FROM sqlite_master WHERE type = 'index'
+                   AND tbl_name = 'application_candidates' AND sql IS NOT NULL""").fetchall():
+            conn.execute(f'DROP INDEX "{name}"')
+        rows = conn.execute("SELECT COUNT(*) FROM application_candidates").fetchone()[0]
+        if rows:
+            conn.execute("ALTER TABLE application_candidates RENAME TO application_candidates_legacy")
+        else:
+            conn.execute("DROP TABLE application_candidates")
+    kept = f"; {rows} old row(s) kept in application_candidates_legacy" if rows else ""
+    print(f"repaired application_candidates to the current shape{kept}", file=sys.stderr)
 
 
 def _migrate_next_actions(conn) -> None:
