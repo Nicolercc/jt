@@ -3,6 +3,7 @@ through the real classifier path. Each case once broke jt or exercised a rule on
 live data reached. If one fails, that bug has come back."""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -80,8 +81,28 @@ def test_live_regression(conn, case):
     assert unprocessed == 0, "a message was left to be re-sent to the model every hour"
 
 
-def test_fixture_uses_no_real_names():
-    """The repository is public. Real cases must be anonymized before they land here."""
-    text = (Path(__file__).parent / "fixtures/live_regressions.json").read_text().lower()
-    for banned in ("ramp", "td bank", "td.com"):
-        assert banned not in text
+def _real_names() -> list[str]:
+    """Companies and roles from the owner's local tracker. Read at test time so
+    no real name is ever written into this public repository. Skipped where the
+    tracker doesn't exist (CI)."""
+    import sqlite3
+    db = Path(os.environ.get("JT_REAL_DB", Path.home() / ".jobtrack" / "jobs.db"))
+    if not db.exists():
+        pytest.skip("no local tracker to check against")
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        rows = conn.execute("SELECT company FROM applications UNION SELECT role FROM applications").fetchall()
+    finally:
+        conn.close()
+    return [r[0].lower() for r in rows if r[0] and len(r[0]) >= 4]
+
+
+def test_repo_contains_no_real_names():
+    """The repository is public. Real cases must be anonymized before they land
+    in any tracked file, including this test."""
+    import subprocess
+    root = Path(__file__).resolve().parents[1]
+    files = subprocess.run(["git", "-C", str(root), "ls-files"], capture_output=True, text=True).stdout.split()
+    text = "\n".join((root / f).read_text(errors="ignore").lower() for f in files if (root / f).is_file())
+    leaked = [n for n in _real_names() if n in text]
+    assert leaked == [], f"{len(leaked)} real name(s) in tracked files"
