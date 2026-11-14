@@ -130,6 +130,9 @@ main() {
     run_step "classify dry-run" /usr/bin/env JT_UNATTENDED=1 "$py" "${REPO_DIR}/classify.py" --dry-run
     run_step "review health dry-run" /usr/bin/env JT_UNATTENDED=1 "$py" "${REPO_DIR}/jt.py" review stale --no-fail
   else
+    # Runs first so it still fires when sync is the thing that's broken (a
+    # failing step stops this script). It reads the previous run's result.
+    /usr/bin/env JT_UNATTENDED=1 "$py" "${REPO_DIR}/jt.py" notify || log "WARN: notify failed"
     run_step "sync" /usr/bin/env JT_UNATTENDED=1 "$py" "${REPO_DIR}/sync.py"
     run_step "classify" /usr/bin/env JT_UNATTENDED=1 "$py" "${REPO_DIR}/classify.py"
     run_step "review health" /usr/bin/env JT_UNATTENDED=1 "$py" "${REPO_DIR}/jt.py" review stale --no-fail
