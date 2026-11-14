@@ -14,7 +14,7 @@ import jt
 
 NY = ZoneInfo("America/New_York")
 TOP_KEYS = {"schema_version", "generated_at", "badge", "freshness", "actions",
-            "suggestions", "review", "recorded", "version"}
+            "suggestions", "review", "recorded", "version", "candidates"}
 ACTION_KEYS = {"action_id", "application_id", "company", "role", "description", "due",
                "overdue", "origin", "reason", "gmail_msg_id", "gmail_url"}
 SUGGESTION_KEYS = {"application_id", "company", "role", "kind", "reason", "close_choices"}
@@ -54,7 +54,7 @@ def check_shape(s):
     assert set(s) == TOP_KEYS
     assert s["schema_version"] == 1
     assert set(s["freshness"]) == FRESHNESS_KEYS
-    assert set(s["badge"]) == {"due", "reviews"}
+    assert set(s["badge"]) == {"due", "reviews", "candidates"}
     assert set(s["review"]) == {"pending", "oldest_days", "top", "items"}
     for a in s["actions"]:
         assert set(a) == ACTION_KEYS
@@ -69,7 +69,7 @@ def check_shape(s):
 def test_state_empty(conn):
     s = snapshot(conn)
     check_shape(s)
-    assert s["badge"] == {"due": 0, "reviews": 0}
+    assert s["badge"] == {"due": 0, "reviews": 0, "candidates": 0}
     assert s["actions"] == [] and s["suggestions"] == []
     assert s["freshness"] == {"gmail_synced_at": None, "classified_at": None, "sync_error": None}
     assert s["review"] == {"pending": 0, "oldest_days": 0, "top": None, "items": []}
@@ -83,7 +83,7 @@ def test_state_healthy(conn, tmp_path):
     sync_log(tmp_path, {"event": "start"}, {"event": "success"})
     s = snapshot(conn)
     check_shape(s)
-    assert s["badge"] == {"due": 1, "reviews": 0}
+    assert s["badge"] == {"due": 1, "reviews": 0, "candidates": 0}
     assert s["freshness"] == {"gmail_synced_at": "2026-08-05T15:00:00Z",
                               "classified_at": "2026-08-05T15:01:00Z", "sync_error": None}
     act = s["actions"][0]

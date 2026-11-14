@@ -178,8 +178,9 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
     title = "jt"
     if badge["due"]:
         title += f" {badge['due']}"
-    if badge["reviews"]:
-        title += f" · {badge['reviews']}?"
+    decisions = badge["reviews"] + badge.get("candidates", 0)
+    if decisions:
+        title += f" · {decisions}?"
     if fresh["sync_error"]:
         title += " ⚠"
     lines = [title, "---"]
@@ -243,6 +244,24 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
         if len(items) > MAX_REVIEW_ITEMS or review["pending"] > len(items):
             more = review["pending"] - min(len(items), MAX_REVIEW_ITEMS)
             lines.append(f"+{more} more in Terminal | {action('review', refresh=False)}")
+
+    found = snap.get("candidates") or []
+    if found:
+        lines.append("---")
+        lines.append(f"New applications found ({len(found)}) | size=12")
+        for c in found[:MAX_REVIEW_ITEMS]:
+            who = " · ".join(v for v in (c.get("company"), c.get("role")) if v) or "Unknown company"
+            lines.append(f"{clean(who, 60)} | size=14 refresh=true")
+            lines.append(f"found in your email · {clean(c.get('applied_on') or '-', 12)} | size=11 color=gray")
+            if not cached:
+                cid = str(c["candidate_id"])
+                if c.get("can_add"):
+                    lines.append("--Add as an application")
+                    for lane, name in LANE_NAMES.items():
+                        lines.append(f"----{name} | " + action("accept-candidate", cid, lane))
+                else:
+                    lines.append("--Missing company or role: add it with jt candidates | color=gray")
+                lines.append("--Not mine | " + action("reject-candidate", cid))
 
     if snap["suggestions"]:
         lines.append("---")
@@ -319,8 +338,16 @@ def tomorrow_at(hhmm: str, today: date | None = None) -> str:
     return f"{((today or date.today()) + timedelta(days=1)).isoformat()} {hhmm}"
 
 
+CLICK_ARITY = {"done": 1, "snooze": 1, "remind": 3, "dismiss-suggestion": 2, "close": 2,
+               "accept-candidate": 2, "reject-candidate": 1, "add-app": 2, "approve": 2,
+               "dismiss-review": 1, "open": 1}
+
+
 def handle_click(argv: list[str]) -> int:
     cmd, rest = argv[0], argv[1:]
+    if len(rest) < CLICK_ARITY.get(cmd, 0):
+        log_usage("click_failed", action=cmd, detail="missing arguments")
+        return 2
     log_usage("click", action=cmd, target=rest[0] if rest and cmd != "open" else None)
     if cmd == "review":
         return launch_review()
@@ -345,6 +372,10 @@ def handle_click(argv: list[str]) -> int:
         args = ["review", "add-app", rest[0], "--lane", rest[1]]
     elif cmd == "close":
         args = ["log", rest[0], rest[1], "--note", "closed from the menu bar"]
+    elif cmd == "accept-candidate":
+        args = ["candidates", "accept", rest[0], "--lane", rest[1]]
+    elif cmd == "reject-candidate":
+        args = ["candidates", "reject", rest[0], "--note", "not mine (menu bar)"]
     elif cmd == "approve":
         args = ["review", "approve", rest[0], "--app-id", rest[1]]
         if len(rest) > 2:
