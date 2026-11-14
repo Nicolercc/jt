@@ -1,6 +1,6 @@
 # jt — product requirements
 
-**Owner:** Nicole Rodriguez · **Last updated:** 2026-11-13 · **Status:** v1 (for me) in progress
+**Owner:** Nicole Rodriguez · **Last updated:** 2026-11-13 (after #49) · **Status:** v1 (for me) in progress
 **This is the plan.** Work that isn't in the **Now** list below doesn't start, for Claude, Codex or anyone else, until this file changes.
 How it works: [ARCHITECTURE.md](ARCHITECTURE.md). Why decisions were made: [DESIGN.md](DESIGN.md).
 
@@ -58,12 +58,12 @@ Job-search updates are scattered across Gmail, assessment platforms and memory. 
 | Metric | Target | Source | Current |
 |---|---|---|---|
 | **Explicit deadlines missed** (north star) | 0 per week | Test-week log + audit | Unknown; Northstar was missed before the fixes |
-| Job emails missing from jt | 0 per week | `jt sync --audit` | 13 in 90 days (before widening); 0 expected now |
+| Job emails missing from jt | 0 per week | `jt sync --audit` | 13 in 90 days before widening; search widened. A 6-day sign-in outage (Nov 6–12) now triggers an alert (#43) |
 | Wrong auto-updates | ≤ 2 per 100 emails | Eval holdout | Unmeasured (n = 5) |
 | Wrong terminal auto-commits | 0 | Eval + live | 0 (D3 caught a wrong "ghosted" live) |
-| Review workload | ≤ 5 items per active day | `review_queue` | 11 after a 90-day backfill |
+| Review workload | ≤ 5 items per active day | `review_queue` | 0 pending after cleanup (non-job mail now goes to `jt ignored`) |
 | Email → task latency | < 1 hour | `classified_at` vs. received | About 1 hour (hourly job) |
-| Panel use | Opened on ≥ 4 of 5 active days | `usage.log` | Day 1 only |
+| Panel use | Opened on ≥ 4 of 5 active days | `usage.log` | 1 day so far (Nov 13: 28 opens, 12 clicks) |
 
 ## 7. Requirements
 
@@ -84,8 +84,19 @@ Job-search updates are scattered across Gmail, assessment platforms and memory. 
 |---|---|---|
 | R9 | Review in one place: plain-English summary, only legal choices, one-click Record / Dismiss / Open email in the menu bar; readable `jt review` | ✅ #36 (pulled from Next into Now after real use showed Review was unusable) |
 | R10 | "Why?" for every automatic change (`jt explain`) | ❌ Next |
-| R11 | Follow-up suggestions age out to CLOSE OUT sensibly (no "50 days quiet" nudges) | ❌ Next |
-| R12 | A reminder email for an existing open task updates that task instead of adding a duplicate (found in the E1 replay: invite + reminder made 2 tasks) | ❌ Next |
+| R11 | Weeks-quiet applications become "Close out?" with legal choices (no "50 days quiet" nudges) | ✅ #38, #41 (no-response allowed through the final round) |
+| R12 | A reminder email for an existing open task updates that task instead of adding a duplicate | ✅ #40 |
+
+### P0 from the 2026-11-13 audit
+| # | Requirement | Status |
+|---|---|---|
+| R13 | Tell me when Gmail sync is broken (it was silently dead Nov 6–12) | ✅ #43 (notification after 2 h, once a day) |
+| R14 | Notify for tasks due today or overdue | ✅ #43 |
+| R15 | New applications found in email appear in the menu (Add / Not mine) | ✅ #45 |
+| R16 | An old-shaped candidates table can't crash the classifier | ✅ #44 (self-repair, rows kept) |
+| R17 | No real job-search names in the public repo | ✅ #47, #48 (main + PR text); git history: owner's call |
+| R18 | Everyday commands and live-model failures are pinned by tests | ✅ #46, #49 |
+| R19 | Gmail sign-in path tested | ❌ Next |
 
 ### P2: after M6
 Native star app (Finder launch, notifications), Apple Reminders for phone reach, Homebrew install for v2 users, Keychain for the OAuth token.
@@ -108,30 +119,30 @@ Native star app (Finder launch, notifications), Apple Reminders for phone reach,
 | M3 Template parsers | ⏸ Deprioritized | Real failures are role ambiguity and coverage, not templates. Revisit with label data. |
 | M4 Read model, writes, backups (D5, D7) | ✅ Done | Live |
 | *Added:* coverage + email → action | ✅ Done | Built because the Northstar trace demanded it; live-verified |
-| M5 Test week | 🟡 Panel ready; **week not started** | 10 menu opens on day 1, no clicks yet |
+| M5 Test week | 🟡 Panel + alerts ready; **week not started** | 1 day of usage (Nov 13) |
 | M6 Go / no-go on native | ⏳ Waiting on M5 | Native drafts #21/#22 exist ahead of this gate; frozen |
 | M7 Demo + write-up | ⏳ | Outline exists: `docs/WRITEUP.md` (local) |
 
-**Drift to correct:** native work started before M6; workspace sprawl (13 local copies); six stale draft PRs. Fix: freeze the native work, prune, and follow the Now list.
+**Drift corrected (2026-11-13):** old drafts #17–#20 closed, #21/#22 frozen; docs refreshed with a PR checklist so they stay current. **Still open:** 14 local repo copies and a running demo app (owner approval to remove).
 
 ## 10. The plan
 
-### NOW (this week). Exit: a clean Review queue, the test week running, labels at least 50% done, E1–E3 merged.
+### NOW (this week). Exit: the test week running, labels at least 50% done, OAuth in production.
+
+Engineering Now items are **done**: E1–E4, R9, R11–R18 (see §7). What remains is evidence only you can produce.
 
 | # | Owner | Task | Done when |
 |---|---|---|---|
-| **Now-1** | Nicole | Clear the 11 review items (`jt review`) | Queue = 0; both Northstar assessments on Support Agent |
-| **Now-2** | Nicole | Start the test week: use the panel daily, note every time you fall back to Gmail and why | 5 active days logged |
-| **Now-3** | Nicole | Label the 117 emails in 3–4 sittings; prioritize deadline and assessment emails | `evals.dataset check` shows ≥ 150 labeled, no spelling variants |
-| **Now-4** | Nicole | Check the Google OAuth publishing status; switch Testing → In production (free) | No 7-day sign-in expiry |
-| **Now-E1** | Eng | ✅ **Same-company role resolution** (#30). The planned "±3 days" rule failed on real data (both Northstar roles were applied to and emailed on the same day). Replaced by evidence rules for progress emails only: skip closed applications; otherwise pick the only application with an active process; else review. The inference is shown in the task's reason. | Done: both real Northstar CodeSignal cases resolve to Support Agent; genuine ties still go to review |
-| **Now-E2** | Eng | ✅ **Ignored bucket** (#32): no-proposal mail from non-recruiting, non-applied senders goes to `jt ignored` (restorable). Model failures, failed checks and unknown senders still go to Review. | Done: replay of the real queue ignored Dior, GitHub and Tailscale and kept the CodeSignal and Hireflix mail; Review 9 → 6 |
-| **Now-E3** | Eng | ✅ **`jt version` + `scripts/deploy.sh`** (#33): refuses a dirty prod checkout; backs up and verifies before pulling; runs the job and checks success; `--dry-run`. Version shows in the panel footer. | Done: tests prove refusal, dry run and backup-failure stop; used for this deploy |
-| **Now-E4** | Eng + Nicole | 🟡 Hireflix default ✅ (#34). **Waiting on Nicole:** close #17, #18 and #20 (they serve the frozen native app or are a prototype); #19 (stale-stage guard) is worth a careful rebase, since it conflicts with current jt.py; #21/#22 stay frozen until M6; delete the 5 merged local copies (a safety check blocks me from deleting folders). | ≤ 1 dev copy + production; no stale PRs |
+| **Now-1** | Nicole | ✅ Clear the review queue | Done: 0 pending |
+| **Now-2** | Nicole | **Start the test week:** use the menu instead of Gmail; close out the 10 stale applications; note every time you fall back to Gmail and why | 5 active days logged |
+| **Now-3** | Nicole | Label the 117 emails (`python3 evals/label_server.py`), deadline and assessment emails first | `evals.dataset check` shows ≥ 150 labeled |
+| **Now-4** | Nicole | **Urgent, before ~Nov 19:** switch Google OAuth from Testing to In production (free) | No more weekly sign-in expiry |
+| **Now-5** | Nicole | Confirm notifications reach you (System Settings → Notifications → Script Editor → Allow) and keep the Mac plugged in | A test notification is seen |
+| **Now-6** | Nicole | Approve removing leftover local copies and the running demo app | ≤ 1 dev copy + production |
 
 ### NEXT (after the test week). Exit: an M6 decision recorded with evidence.
 - Run the baseline: `python3 -m evals.run --set holdout --policy compare` and record it in DESIGN.md §10.
-- R9 review-in-one-place, R10 `jt explain`, R11 suggestion aging: chosen by what the test week shows hurts most.
+- R10 `jt explain`, R19 Gmail sign-in tests, splitting `jt.py`: chosen by what the test week shows hurts most.
 - **M6 decision rule:**
   - Panel opened ≥ 4 of 5 days **and** you wanted it beside Gmail → build the native app.
   - Gmail fallbacks were caused by missing or wrong data → more classifier work.
