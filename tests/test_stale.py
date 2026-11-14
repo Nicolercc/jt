@@ -54,8 +54,8 @@ def test_close_choices_follow_your_transition_rules(conn):
     late = app(conn, ("screen", "tech"), applied_on="2026-08-27")
     by_app = {s["application_id"]: s for s in suggestions(conn, "2026-11-13")}
     assert [c["kind"] for c in by_app[early]["close_choices"]] == ["ghosted", "withdrawn"]
-    # transitions.py doesn't allow 'ghosted' after 'tech'; only withdrawing is offered.
-    assert [c["kind"] for c in by_app[late]["close_choices"]] == ["withdrawn"]
+    # Nicole's rule (2026-11-13): "no response" is allowed through the final round.
+    assert [c["kind"] for c in by_app[late]["close_choices"]] == ["ghosted", "withdrawn"]
     assert by_app[early]["close_choices"][0]["label"] == "Mark as no response"
 
 
@@ -66,8 +66,21 @@ def test_log_speaks_json_for_the_panel(conn, capsys):
 
 
 def test_illegal_close_from_the_panel_fails_cleanly(conn, capsys):
-    i = app(conn, ("screen", "tech"))
+    """After an offer they did respond, so 'no response' stays illegal."""
+    i = app(conn, ("screen", "tech", "onsite", "offer"))
     with pytest.raises(SystemExit) as exc:
         jt.main_args(["log", str(i), "ghosted", "--json"])
     assert exc.value.code == 1
     assert json.loads(capsys.readouterr().out)["ok"] is False
+
+
+
+@pytest.mark.parametrize("stage", ["applied", "confirmed", "response", "screen", "tech", "onsite", "final"])
+def test_no_response_is_allowed_through_the_final_round(stage):
+    from transitions import is_legal
+    assert is_legal(stage, "ghosted")[0]
+
+
+def test_no_response_is_not_allowed_after_an_offer():
+    from transitions import is_legal
+    assert not is_legal("offer", "ghosted")[0]
