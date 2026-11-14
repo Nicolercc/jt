@@ -84,10 +84,10 @@ def test_list_filters_by_lane_and_status(conn, capsys):
 # ---------------------------------------------------------------- show
 
 def test_show_prints_details_and_marks_auto_vs_manual_history(conn, capsys):
-    i = app(conn, "Ramp", contact="r@ramp.com",
+    i = app(conn, "Northstar", contact="r@northstar.example",
             events=[("confirmed", 2, "msg1"), ("screen", 1, None)])
     out = run(["show", str(i)], capsys)
-    assert "Ramp - Engineer" in out and "status screen" in out and "r@ramp.com" in out
+    assert "Northstar - Engineer" in out and "status screen" in out and "r@northstar.example" in out
     assert "auto" in out and "manual" in out and "quoted line" in out
 
 
