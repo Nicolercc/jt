@@ -1034,6 +1034,13 @@ def _close_choices(kind: str, d: dict) -> list[dict]:
 
 def today_snapshot(conn, today: date, now: datetime, tz: ZoneInfo) -> dict:
     entries = today_entries(conn, today, now, tz)
+    # Applications jt found in your email but you haven't confirmed (audit P0:
+    # these were invisible outside `jt candidates`).
+    candidates = [{
+        "candidate_id": c["id"], "company": c["company"], "role": c["role"],
+        "applied_on": c["applied_on"], "can_add": bool(c["company"] and c["role"]),
+    } for c in conn.execute("""SELECT id, company, role, applied_on FROM application_candidates
+                               WHERE status = 'pending' ORDER BY id LIMIT 10""")]
     actions = []
     for x in entries["actions"]:
         r = x["row"]
@@ -1069,7 +1076,7 @@ def today_snapshot(conn, today: date, now: datetime, tz: ZoneInfo) -> dict:
     return {
         "schema_version": TODAY_SCHEMA_VERSION,
         "generated_at": _utc_iso(now),
-        "badge": {"due": len(actions), "reviews": stats["total"]},
+        "badge": {"due": len(actions), "reviews": stats["total"], "candidates": len(candidates)},
         "freshness": {"gmail_synced_at": _fresh(conn, "gmail_synced_at"),
                       "classified_at": _fresh(conn, "classified_at"),
                       "sync_error": sync_error_state()},
@@ -1077,6 +1084,7 @@ def today_snapshot(conn, today: date, now: datetime, tz: ZoneInfo) -> dict:
         "suggestions": suggestions,
         "recorded": recorded,
         "version": {k: v for k, v in version_info().items() if k != "dirty"},
+        "candidates": candidates,
         "review": {"pending": stats["total"], "oldest_days": stats["oldest_age_days"],
                    "top": {"review_id": top["id"], "reason": top["reason"]} if top else None,
                    "items": review_items(conn)},
@@ -1715,7 +1723,11 @@ def cmd_candidate_accept(conn, a):
     ).fetchone()
     if not candidate:
         sys.exit(f"error: no application candidate #{a.candidate_id}")
+    as_json = getattr(a, "json", False)
     if candidate["status"] == "accepted":
+        if as_json:
+            return _print_ok(candidate_id=a.candidate_id,
+                             application_id=candidate["accepted_application_id"])
         print(
             f"candidate #{a.candidate_id} already accepted"
             + (f" as application #{candidate['accepted_application_id']}"
@@ -1723,6 +1735,8 @@ def cmd_candidate_accept(conn, a):
         )
         return
     if candidate["status"] == "rejected":
+        if as_json:
+            sys.exit(f"error: candidate #{a.candidate_id} was already marked not yours")
         print(f"candidate #{a.candidate_id} already rejected")
         return
 
@@ -1749,6 +1763,8 @@ def cmd_candidate_accept(conn, a):
             (app_id, a.candidate_id),
         )
 
+    if as_json:
+        return _print_ok(candidate_id=a.candidate_id, application_id=app_id)
     company, role, lane, day = fields[:4]
     print(f"accepted candidate #{a.candidate_id} as #{app_id}  {company} - {role}  [{lane}]  applied {day}")
 
@@ -1768,6 +1784,10 @@ def cmd_candidate_reject(conn, a):
                WHERE id = ? AND status = 'pending'""",
             (a.note, a.candidate_id),
         )
+    if getattr(a, "json", False):
+        if cur.rowcount == 0:
+            sys.exit(f"error: candidate #{a.candidate_id} was already decided")
+        return _print_ok(candidate_id=a.candidate_id)
     if cur.rowcount == 0:
         print(f"candidate #{a.candidate_id} was already decided")
     else:
@@ -2218,11 +2238,13 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--contact")
     c.add_argument("--url")
     c.add_argument("--notes")
+    c.add_argument("--json", action="store_true")
     c.set_defaults(fn=cmd_candidates)
 
     c = cand.add_parser("reject", help="reject one candidate")
     c.add_argument("candidate_id", type=int)
     c.add_argument("--note")
+    c.add_argument("--json", action="store_true")
     c.set_defaults(fn=cmd_candidates)
 
     s = sub.add_parser("action", help="add, list, finish, or snooze actions")

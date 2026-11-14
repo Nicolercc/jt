@@ -389,3 +389,39 @@ def test_record_button_sends_the_expected_stage(plugin, monkeypatch):
     monkeypatch.setattr(plugin, "jt", lambda *a, **k: calls.append(a) or R())
     assert plugin.handle_click(["approve", "7", "10", "screen"]) == 0
     assert calls[0] == ("review", "approve", "7", "--app-id", "10", "--expected-stage", "screen", "--json")
+
+
+
+def test_new_applications_section_with_add_and_not_mine(plugin, monkeypatch):
+    s = snap(badge={"due": 0, "reviews": 0, "candidates": 1},
+             candidates=[{"candidate_id": 5, "company": "Figma", "role": "Product Designer",
+                          "applied_on": "2026-11-14", "can_add": True}])
+    lines = plugin.render(s, None, NOW)
+    assert lines[0] == "jt · 1?"
+    text = "\n".join(lines)
+    assert "New applications found (1)" in text and "Figma · Product Designer" in text
+    comms = next(x for x in lines if x.startswith("----Comms"))
+    assert 'param1=accept-candidate param2="5" param3="comms"' in comms
+    assert any(x.startswith("--Not mine") and 'param1=reject-candidate param2="5"' in x for x in lines)
+    calls = []
+    class R:
+        returncode, stdout, stderr = 0, json.dumps({"ok": True}), ""
+    monkeypatch.setattr(plugin, "jt", lambda *a, **k: calls.append(a) or R())
+    assert plugin.handle_click(["accept-candidate", "5", "comms"]) == 0
+    assert plugin.handle_click(["reject-candidate", "5"]) == 0
+    assert calls[0] == ("candidates", "accept", "5", "--lane", "comms", "--json")
+    assert calls[1] == ("candidates", "reject", "5", "--note", "not mine (menu bar)", "--json")
+
+
+def test_candidate_without_role_offers_only_not_mine_and_terminal(plugin):
+    s = snap(badge={"due": 0, "reviews": 0, "candidates": 1},
+             candidates=[{"candidate_id": 6, "company": "Acme", "role": None,
+                          "applied_on": "2026-11-14", "can_add": False}])
+    lines = plugin.render(s, None, NOW)
+    assert not any("accept-candidate" in x for x in lines)
+    assert any(x.startswith("--Not mine") for x in lines)
+
+
+def test_click_with_missing_arguments_fails_cleanly(plugin):
+    assert plugin.handle_click(["accept-candidate"]) == 2
+    assert plugin.handle_click(["approve", "7"]) == 2
