@@ -234,8 +234,9 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
                             lines.append(f"----{LANE_NAMES.get(lane, lane)} | "
                                          + action("add-app", str(it["review_id"]), lane))
                         continue
+                    stage = [c["stage"]] if c.get("stage") else []
                     lines.append(f"--✓ {clean(c['label'], 70)} | "
-                                 + action("approve", str(it["review_id"]), str(c["app_id"])))
+                                 + action("approve", str(it["review_id"]), str(c["app_id"]), *stage))
                 lines.append("--Dismiss: not needed | " + action("dismiss-review", str(it["review_id"])))
             if it.get("gmail_url"):
                 lines.append(f"--Open email | {action('open', it['gmail_url'], refresh=False)}")
@@ -346,6 +347,8 @@ def handle_click(argv: list[str]) -> int:
         args = ["log", rest[0], rest[1], "--note", "closed from the menu bar"]
     elif cmd == "approve":
         args = ["review", "approve", rest[0], "--app-id", rest[1]]
+        if len(rest) > 2:
+            args += ["--expected-stage", rest[2]]
     elif cmd == "dismiss-review":
         args = ["review", "dismiss", rest[0], "--note", "dismissed from the menu bar"]
     else:
