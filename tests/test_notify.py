@@ -23,7 +23,7 @@ def conn(tmp_path, monkeypatch):
     c = jt.connect()
     with jt.write_txn(c):
         c.execute("INSERT INTO applications (id, company, role, lane, applied_on) "
-                  "VALUES (10, 'Ramp', 'CX Agent', 'ops', '2026-08-28')")
+                  "VALUES (10, 'Northstar', 'Support Agent', 'ops', '2026-08-28')")
     yield c
     c.close()
 
@@ -65,10 +65,10 @@ def test_never_synced_and_failing_alerts(conn, tmp_path):
 # ---------------------------------------------------------------- deadlines
 
 def test_task_due_today_alerts_once(conn):
-    jt.add_action(conn, 10, "Complete Ramp assessment", due_date="2026-11-14")
+    jt.add_action(conn, 10, "Complete Northstar assessment", due_date="2026-11-14")
     [n] = plan(conn)
-    assert n["title"] == "Due today: Complete Ramp assessment"
-    assert n["message"] == "Ramp · CX Agent"
+    assert n["title"] == "Due today: Complete Northstar assessment"
+    assert n["message"] == "Northstar · Support Agent"
     jt.record_notified(conn, [n])
     assert plan(conn) == []
 
@@ -91,17 +91,17 @@ def test_snoozed_or_done_tasks_do_not_alert(conn):
 def test_timed_task_shows_its_time(conn):
     jt.add_action(conn, 10, "Interview", due_local=datetime(2026, 11, 14, 14, 0), tz="America/New_York")
     [n] = plan(conn)
-    assert n["title"] == "Due today: Interview" and n["message"] == "Ramp · CX Agent · 2:00 PM"
+    assert n["title"] == "Due today: Interview" and n["message"] == "Northstar · Support Agent · 2:00 PM"
 
 
 # ---------------------------------------------------------------- new applications
 
 def test_new_application_found_alerts_once(conn):
     jt.insert_application_candidate(conn, raw_input="{}", source="classifier",
-                                    source_ref="gmail:x1", company="TD Bank", role="Associate Banker II")
+                                    source_ref="gmail:x1", company="Harbor Bank", role="Associate II")
     [n] = plan(conn)
     assert n["title"] == "New application found"
-    assert n["message"] == "TD Bank · Associate Banker II. Open the jt menu to add it."
+    assert n["message"] == "Harbor Bank · Associate II. Open the jt menu to add it."
     jt.record_notified(conn, [n])
     assert plan(conn) == []
 
@@ -110,9 +110,9 @@ def test_new_application_found_alerts_once(conn):
 
 def test_private_mode_hides_company_names(conn, monkeypatch):
     monkeypatch.setenv("JT_NOTIFY_PRIVATE", "1")
-    jt.add_action(conn, 10, "Complete Ramp assessment", due_date="2026-11-14")
+    jt.add_action(conn, 10, "Complete Northstar assessment", due_date="2026-11-14")
     [n] = plan(conn)
-    assert "Ramp" not in n["title"] + n["message"]
+    assert "Northstar" not in n["title"] + n["message"]
     assert n["title"] == "A task is due today"
 
 
@@ -129,16 +129,16 @@ def test_notification_text_is_passed_as_arguments_not_code(monkeypatch):
 def test_notify_command_sends_and_records(conn, monkeypatch, capsys):
     sent = []
     monkeypatch.setattr(jt, "send_notification", lambda t, m: sent.append((t, m)))
-    jt.add_action(conn, 10, "Complete Ramp assessment", due_date="2026-11-14")
+    jt.add_action(conn, 10, "Complete Northstar assessment", due_date="2026-11-14")
     monkeypatch.setattr(jt, "_notify_now", lambda tz: NOW)
     jt.main_args(["notify"])
     jt.main_args(["notify"])
-    assert sent == [("Due today: Complete Ramp assessment", "Ramp · CX Agent")]
+    assert sent == [("Due today: Complete Northstar assessment", "Northstar · Support Agent")]
 
 
 def test_dry_run_sends_nothing_and_records_nothing(conn, monkeypatch, capsys):
     monkeypatch.setattr(jt, "send_notification", lambda t, m: pytest.fail("sent during dry run"))
-    jt.add_action(conn, 10, "Complete Ramp assessment", due_date="2026-11-14")
+    jt.add_action(conn, 10, "Complete Northstar assessment", due_date="2026-11-14")
     monkeypatch.setattr(jt, "_notify_now", lambda tz: NOW)
     jt.main_args(["notify", "--dry-run", "--json"])
     assert len(json.loads(capsys.readouterr().out)) == 1
@@ -148,6 +148,6 @@ def test_dry_run_sends_nothing_and_records_nothing(conn, monkeypatch, capsys):
 def test_notifications_can_be_turned_off(conn, monkeypatch):
     monkeypatch.setenv("JT_NOTIFY", "0")
     monkeypatch.setattr(jt, "send_notification", lambda t, m: pytest.fail("sent while off"))
-    jt.add_action(conn, 10, "Complete Ramp assessment", due_date="2026-11-14")
+    jt.add_action(conn, 10, "Complete Northstar assessment", due_date="2026-11-14")
     monkeypatch.setattr(jt, "_notify_now", lambda tz: NOW)
     jt.main_args(["notify"])

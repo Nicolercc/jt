@@ -16,7 +16,7 @@ def conn(tmp_path, monkeypatch):
     c = jt.connect()
     with jt.write_txn(c):
         c.execute("INSERT INTO applications (company, role, lane, applied_on) "
-                  "VALUES ('Ramp', 'CX Agent', 'ops', '2026-08-28')")
+                  "VALUES ('Northstar', 'Support Agent', 'ops', '2026-08-28')")
     yield c
     c.close()
 
@@ -52,7 +52,7 @@ def test_non_job_sender_with_no_proposal_is_ignored(conn, sender):
 @pytest.mark.parametrize("sender", [
     "Greenhouse <no-reply@us.greenhouse-mail.io>", "Lever <no-reply@hire.lever.co>",
     "CodeSignal <no-reply@codesignal.com>", "Hireflix <noreply@hireflix.com>",
-    "Workday <acme@myworkday.com>", "Jane <jane@ramp.com>"])
+    "Workday <acme@myworkday.com>", "Jane <jane@northstar.example>"])
 def test_recruiting_or_applied_company_sender_still_goes_to_review(conn, sender):
     raw(conn, "r1", sender)
     run(conn)
@@ -69,7 +69,7 @@ def test_failed_validation_from_non_job_sender_still_goes_to_review(conn):
     """Only the 'found nothing' case is ignored; a proposal that fails a check
     is the classifier being unsure, which is yours to decide."""
     raw(conn, "n1", "GitHub <noreply@github.com>", body="we received your application today")
-    p = {"gmail_msg_id": "n1", "company": "Ramp", "role_hint": "CX Agent", "kind": "screen",
+    p = {"gmail_msg_id": "n1", "company": "Northstar", "role_hint": "Support Agent", "kind": "screen",
          "occurred_on": "2026-10-16", "confidence": 0.2, "evidence": "we received your application"}
     run(conn, json.dumps([p]))
     assert pending(conn) == ["n1"]
@@ -89,7 +89,7 @@ def test_ignored_list_and_restore(conn, capsys):
 
 
 def test_restore_refuses_a_real_review_item(conn):
-    raw(conn, "r1", "Jane <jane@ramp.com>")
+    raw(conn, "r1", "Jane <jane@northstar.example>")
     run(conn)
     rid = conn.execute("SELECT id FROM review_queue").fetchone()[0]
     with pytest.raises(SystemExit, match="not an ignored"):

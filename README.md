@@ -46,7 +46,7 @@ $ jt stale
   -  -------  ------------------  ---------  -----  ---------  -------
   2  Linear   Product Engineer    confirmed  10d    FOLLOW UP  -
   1  Stripe   Backend Engineer    screen     8d     FOLLOW UP  -
-  4  Ramp     Operations Analyst  applied    7d     FOLLOW UP  -
+  4  Northstar     Operations Analyst  applied    7d     FOLLOW UP  -
 
 $ jt log 3 screen
 error: rejected is terminal; refusing to append 'screen' to a closed application

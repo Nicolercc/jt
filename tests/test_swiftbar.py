@@ -269,10 +269,10 @@ def test_old_failure_banner_expires(plugin):
 def item(rid=7, choices=None, url="https://mail.google.com/mail/u/0/#all/abc"):
     return {"review_id": rid, "received_on": "2026-09-05", "from": "hireflix.com",
             "subject": "Thank you for completing your video interview",
-            "summary": "Looks like an interview or screen invite from Ramp, but jt isn't sure.",
+            "summary": "Looks like an interview or screen invite from Northstar, but jt isn't sure.",
             "gmail_url": url,
             "choices": choices if choices is not None else
-                       [{"label": "Record interview for Ramp · CX Agent", "app_id": 10}]}
+                       [{"label": "Record interview for Northstar · Support Agent", "app_id": 10}]}
 
 
 def test_review_items_render_in_plain_english_with_one_click_choices(plugin):
@@ -284,7 +284,7 @@ def test_review_items_render_in_plain_english_with_one_click_choices(plugin):
     assert "Thank you for completing your video interview" in text
     assert "jt isn't sure" in text
     assert "classifier returned" not in text and "null" not in text
-    approve = next(x for x in lines if "Record interview for Ramp" in x)
+    approve = next(x for x in lines if "Record interview for Northstar" in x)
     assert 'param1=approve param2="7" param3="10"' in approve
     dismiss = next(x for x in lines if x.startswith("--Dismiss"))
     assert 'param1=dismiss-review param2="7"' in dismiss
@@ -303,7 +303,7 @@ def test_rows_with_submenus_are_not_greyed_out(plugin):
     """SwiftBar greys out rows with no action; give parents a harmless one."""
     s = snap(badge={"due": 0, "reviews": 1},
              review={"pending": 1, "oldest_days": 0, "top": None, "items": [item()]},
-             suggestions=[{"application_id": 9, "company": "Ramp", "role": "CX Agent",
+             suggestions=[{"application_id": 9, "company": "Northstar", "role": "Support Agent",
                            "kind": "FOLLOW UP", "reason": "11 business days quiet"}])
     lines = plugin.render(s, None, NOW)
     parents = [x for x in lines if x.startswith(("Thank you for completing", "Follow Up:"))]
@@ -333,12 +333,12 @@ def test_failed_approve_shows_the_reason_and_expires(plugin, monkeypatch):
 
 
 def test_new_application_choice_asks_for_the_lane(plugin, monkeypatch):
-    it = item(rid=21, choices=[{"label": "Add TD Bank · Associate Banker II as a new application",
+    it = item(rid=21, choices=[{"label": "Add Harbor Bank · Associate II as a new application",
                                 "new_app": True, "lanes": ["swe", "ops", "comms"]}])
     s = snap(badge={"due": 0, "reviews": 1},
              review={"pending": 1, "oldest_days": 0, "top": None, "items": [it]})
     lines = plugin.render(s, None, NOW)
-    assert any(x.startswith("--Add TD Bank · Associate Banker II as a new application") for x in lines)
+    assert any(x.startswith("--Add Harbor Bank · Associate II as a new application") for x in lines)
     ops = next(x for x in lines if x.startswith("----Ops"))
     assert 'param1=add-app param2="21" param3="ops"' in ops
     calls = []
@@ -350,12 +350,12 @@ def test_new_application_choice_asks_for_the_lane(plugin, monkeypatch):
 
 
 def test_close_out_suggestion_offers_close_choices_and_keep_open(plugin, monkeypatch):
-    s = snap(suggestions=[{"application_id": 9, "company": "Ramp", "role": "CX Agent",
+    s = snap(suggestions=[{"application_id": 9, "company": "Northstar", "role": "Support Agent",
                            "kind": "CLOSE OUT", "reason": "55 business days with no reply",
                            "close_choices": [{"label": "Mark as no response", "kind": "ghosted"},
                                              {"label": "I withdrew", "kind": "withdrawn"}]}])
     lines = plugin.render(s, None, NOW)
-    assert any(x.startswith("Close out?: Ramp") for x in lines)
+    assert any(x.startswith("Close out?: Northstar") for x in lines)
     close = next(x for x in lines if x.startswith("--Mark as no response"))
     assert 'param1=close param2="9" param3="ghosted"' in close
     assert any(x.startswith("--Keep it open") for x in lines)
@@ -377,7 +377,7 @@ def test_more_suggestions_than_shown_are_counted(plugin):
 
 
 def test_record_button_sends_the_expected_stage(plugin, monkeypatch):
-    it = item(rid=7, choices=[{"label": "Record interview for Ramp · CX Agent", "app_id": 10,
+    it = item(rid=7, choices=[{"label": "Record interview for Northstar · Support Agent", "app_id": 10,
                                "stage": "screen"}])
     s = snap(badge={"due": 0, "reviews": 1},
              review={"pending": 1, "oldest_days": 0, "top": None, "items": [it]})
@@ -425,3 +425,14 @@ def test_candidate_without_role_offers_only_not_mine_and_terminal(plugin):
 def test_click_with_missing_arguments_fails_cleanly(plugin):
     assert plugin.handle_click(["accept-candidate"]) == 2
     assert plugin.handle_click(["approve", "7"]) == 2
+
+
+def test_review_summary_is_not_cut_off_for_long_company_names(plugin):
+    """Found while anonymizing tests: a longer company name pushed the key
+    words ('jt isn't sure') past a 70-character cut."""
+    summary = ("Looks like an interview or screen invite from Metropolitan Transportation "
+               "Authority, but jt isn't sure.")
+    s = snap(badge={"due": 0, "reviews": 1},
+             review={"pending": 1, "oldest_days": 0, "top": None,
+                     "items": [item(choices=[]) | {"summary": summary}]})
+    assert any("jt isn't sure." in x for x in plugin.render(s, None, NOW))

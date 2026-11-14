@@ -226,7 +226,7 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
         for it in items[:MAX_REVIEW_ITEMS]:
             title = clean(it.get("subject") or "(no subject)", 48)
             lines.append(f"{title} | size=14 refresh=true")
-            lines.append(f"{clean(it.get('from') or '-', 30)} · {clean(it['summary'], 70)} | size=11 color=gray")
+            lines.append(f"{clean(it.get('from') or '-', 30)} · {clean(it['summary'], 120)} | size=11 color=gray")
             if not cached:
                 for c in it.get("choices", []):
                     if c.get("new_app"):

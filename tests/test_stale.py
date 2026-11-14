@@ -24,7 +24,7 @@ def conn(tmp_path, monkeypatch):
 def app(conn, kinds=(), applied_on="2026-08-28"):
     with jt.write_txn(conn):
         i = conn.execute("INSERT INTO applications (company, role, lane, applied_on) "
-                         "VALUES ('Ramp', 'CX Agent', 'ops', ?)", (applied_on,)).lastrowid
+                         "VALUES ('Northstar', 'Support Agent', 'ops', ?)", (applied_on,)).lastrowid
         for k in kinds:
             conn.execute("INSERT INTO events (application_id, occurred_on, kind) VALUES (?, ?, ?)",
                          (i, applied_on, k))

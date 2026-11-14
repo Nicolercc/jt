@@ -1191,7 +1191,7 @@ def test_long_official_title_matches_saved_short_title(conn):
     ("Workplace Operations Coordinator, Center X", "Workplace Operations Coordinator", True),
     ("Solutions Engineer", "Associate Solutions Engineer, Healthcare", True),
     ("Engineer", "Backend Engineer", False),
-    ("Customer Experience Agent", "Customer Experience Associate", False),
+    ("Support Agent", "Support Associate", False),
 ])
 def test_role_containment_requires_two_contiguous_words(hint, role, contained):
     assert (classify._role_score(hint, role) == 100.0) is contained
@@ -1277,12 +1277,12 @@ def test_switch_only_accepts_exactly_1(monkeypatch, value):
     ("", "", None),
 ])
 def test_email_request_action(conn, deadline, quote, expected):
-    app_id = add_app(conn, "Ramp", "CX Agent")
+    app_id = add_app(conn, "Northstar", "Support Agent")
     body = "Please complete the assessment by Sep 3, 5:00 PM PT."
     add_raw(conn, body=body)
-    p = proposal(company="Ramp", role_hint="CX Agent", kind="tech",
+    p = proposal(company="Northstar", role_hint="Support Agent", kind="tech",
                  evidence="complete the assessment")
-    p["request"] = dict(description="Complete Ramp assessment", due_text=quote,
+    p["request"] = dict(description="Complete Northstar assessment", due_text=quote,
                         due_iso=deadline, due_tz="America/Los_Angeles")
     # An assessment request can arrive before a screening stage.
     p["kind"] = "screen"
@@ -1305,28 +1305,28 @@ def test_email_request_action(conn, deadline, quote, expected):
 
 
 def test_ambiguous_request_names_roles_without_action(conn):
-    add_app(conn, "Ramp", "CX Agent")
-    add_app(conn, "Ramp", "Support Lead")
+    add_app(conn, "Northstar", "Support Agent")
+    add_app(conn, "Northstar", "Support Lead")
     add_raw(conn)
-    p = proposal(company="Ramp", role_hint="")
-    p["request"] = dict(description="Reply to Ramp", due_text="", due_iso="", due_tz="")
+    p = proposal(company="Northstar", role_hint="")
+    p["request"] = dict(description="Reply to Northstar", due_text="", due_iso="", due_tz="")
     classify.apply_verdicts(conn, classify.verdicts_for(
         conn, classify.load_unprocessed(conn, 10), json.dumps([p])))
     assert conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
     reason = conn.execute("SELECT reason FROM review_queue").fetchone()[0]
-    assert "CX Agent" in reason and "Support Lead" in reason
+    assert "Support Agent" in reason and "Support Lead" in reason
 
 
 # --- Request deadline edge cases (found in review) ----------------------------
 
 def _request_row(conn, body, request, received_on="2026-09-02", kind="request"):
-    add_app(conn, "Ramp", "CX Agent", applied_on="2026-08-28")
+    add_app(conn, "Northstar", "Support Agent", applied_on="2026-08-28")
     conn.execute(
         "INSERT INTO raw_messages (gmail_msg_id, received_on, sender, subject, body) "
-        "VALUES ('r1', ?, 'x@ramp.com', 'Assessment', ?)", (received_on, body))
+        "VALUES ('r1', ?, 'x@northstar.example', 'Assessment', ?)", (received_on, body))
     conn.commit()
-    p = proposal("r1", company="Ramp", role_hint="CX Agent", kind=kind,
-                 evidence="complete the Ramp assessment")
+    p = proposal("r1", company="Northstar", role_hint="Support Agent", kind=kind,
+                 evidence="complete the Northstar assessment")
     p["occurred_on"] = received_on
     p["request"] = request
     v = classify.verdicts_for(conn, classify.load_unprocessed(conn, 10), json.dumps([p]))
@@ -1337,18 +1337,18 @@ def _request_row(conn, body, request, received_on="2026-09-02", kind="request"):
 def test_deadline_quote_survives_line_wraps_in_the_email(conn):
     """Real emails break lines mid-sentence (\\r\\n). The model quotes the deadline
     on one line; an exact substring check silently dropped the real deadline."""
-    body = "Please complete the Ramp assessment by\r\nSep 3, 5:00 PM PT. Thanks"
+    body = "Please complete the Northstar assessment by\r\nSep 3, 5:00 PM PT. Thanks"
     row, _, _ = _request_row(conn, body, dict(
-        description="Complete Ramp assessment", due_text="by Sep 3, 5:00 PM PT",
+        description="Complete Northstar assessment", due_text="by Sep 3, 5:00 PM PT",
         due_iso="2026-09-03T17:00", due_tz="America/Los_Angeles"))
     assert row["due_at_utc"] == "2026-09-04T00:00:00Z"
     assert row["reason"] is None
 
 
 def test_deadline_before_the_email_arrived_is_rejected(conn):
-    body = "Please complete the Ramp assessment by Sep 3."
+    body = "Please complete the Northstar assessment by Sep 3."
     row, _, _ = _request_row(conn, body, dict(
-        description="Complete Ramp assessment", due_text="by Sep 3",
+        description="Complete Northstar assessment", due_text="by Sep 3",
         due_iso="2026-08-01", due_tz=""))
     assert row["due_date"] == "2026-09-02"            # arrival-day fallback
     assert "before the email arrived" in row["reason"]
@@ -1357,9 +1357,9 @@ def test_deadline_before_the_email_arrived_is_rejected(conn):
 def test_replayed_request_email_is_still_marked_processed(conn):
     """A replay must not leave the message unprocessed, or it is re-sent to the
     model on every hourly run."""
-    body = "Please complete the Ramp assessment soon."
+    body = "Please complete the Northstar assessment soon."
     _, p, _ = _request_row(conn, body, dict(
-        description="Complete Ramp assessment", due_text="", due_iso="", due_tz=""))
+        description="Complete Northstar assessment", due_text="", due_iso="", due_tz=""))
     conn.execute("UPDATE raw_messages SET processed = 0")
     conn.commit()
     v = classify.verdicts_for(conn, classify.load_unprocessed(conn, 10), json.dumps([p]))
@@ -1392,13 +1392,13 @@ def test_request_kind_with_empty_request_is_still_invalid(conn):
 
 
 # --- E1: resolve two roles at one company from evidence, never by guessing -----
-# Real case: two Ramp roles, both applied 2026-08-28. CodeSignal assessment emails
-# never name the role. Only the CX Agent application had progressed (screen), so
+# Real case: two Northstar roles, both applied 2026-08-28. CodeSignal assessment emails
+# never name the role. Only the Support Agent application had progressed (screen), so
 # the assessment continues that process.
 
-def _ramp(conn, agent_events=("screen",), associate_events=("confirmed",)):
-    agent = add_app(conn, "Ramp", "Customer Experience Agent", applied_on="2026-08-28")
-    assoc = add_app(conn, "Ramp", "Customer Experience Associate", applied_on="2026-08-28")
+def _northstar(conn, agent_events=("screen",), associate_events=("confirmed",)):
+    agent = add_app(conn, "Northstar", "Support Agent", applied_on="2026-08-28")
+    assoc = add_app(conn, "Northstar", "Support Associate", applied_on="2026-08-28")
     for app_id, kinds in ((agent, agent_events), (assoc, associate_events)):
         for i, k in enumerate(kinds):
             conn.execute("INSERT INTO events (application_id, occurred_on, kind) VALUES (?, ?, ?)",
@@ -1410,13 +1410,13 @@ def _ramp(conn, agent_events=("screen",), associate_events=("confirmed",)):
 def _verdict(conn, kind, role_hint="", request=True):
     conn.execute("INSERT INTO raw_messages (gmail_msg_id, received_on, sender, subject, body) "
                  "VALUES ('cs1', '2026-09-02', 'no-reply@codesignal.com', 'Assessment', "
-                 "'Ramp has invited you to complete an assessment on CodeSignal.')")
+                 "'Northstar has invited you to complete an assessment on CodeSignal.')")
     conn.commit()
-    p = proposal("cs1", company="Ramp", role_hint=role_hint, kind=kind,
-                 evidence="Ramp has invited you to complete an assessment")
+    p = proposal("cs1", company="Northstar", role_hint=role_hint, kind=kind,
+                 evidence="Northstar has invited you to complete an assessment")
     p["occurred_on"] = "2026-09-02"
     if request:
-        p["request"] = {"description": "Complete Ramp assessment", "due_text": "",
+        p["request"] = {"description": "Complete Northstar assessment", "due_text": "",
                         "due_iso": "", "due_tz": ""}
     if kind == "request" and not request:
         raise ValueError
@@ -1424,7 +1424,7 @@ def _verdict(conn, kind, role_hint="", request=True):
 
 
 def test_assessment_goes_to_the_only_application_with_an_active_process(conn):
-    agent, _ = _ramp(conn)
+    agent, _ = _northstar(conn)
     v = _verdict(conn, "request")
     assert v.ok, v.reason
     assert v.application_id == agent
@@ -1435,26 +1435,26 @@ def test_assessment_goes_to_the_only_application_with_an_active_process(conn):
 
 
 def test_closed_application_is_not_a_candidate(conn):
-    agent, _ = _ramp(conn, agent_events=(), associate_events=("confirmed", "rejected"))
+    agent, _ = _northstar(conn, agent_events=(), associate_events=("confirmed", "rejected"))
     v = _verdict(conn, "request")
     assert v.ok and v.application_id == agent
 
 
 def test_two_active_processes_still_go_to_review(conn):
-    _ramp(conn, agent_events=("screen",), associate_events=("screen",))
+    _northstar(conn, agent_events=("screen",), associate_events=("screen",))
     v = _verdict(conn, "request")
     assert not v.ok and "ambiguous role" in v.reason
 
 
 def test_no_active_process_still_goes_to_review(conn):
-    _ramp(conn, agent_events=("confirmed",), associate_events=("confirmed",))
+    _northstar(conn, agent_events=("confirmed",), associate_events=("confirmed",))
     v = _verdict(conn, "request")
     assert not v.ok and "ambiguous role" in v.reason
 
 
 def test_non_progress_kinds_are_never_inferred(conn):
     """A confirmation or rejection could belong to either role; don't infer."""
-    _ramp(conn)
+    _northstar(conn)
     v = _verdict(conn, "confirmed", request=False)
     assert not v.ok and "ambiguous role" in v.reason
 
@@ -1462,8 +1462,8 @@ def test_non_progress_kinds_are_never_inferred(conn):
 def test_a_clear_role_hint_still_wins_over_inference(conn):
     """If the email names the Associate role, use it even though Agent is the
     active process."""
-    _, assoc = _ramp(conn, agent_events=("screen",), associate_events=("confirmed",))
-    v = _verdict(conn, "request", role_hint="Customer Experience Associate")
+    _, assoc = _northstar(conn, agent_events=("screen",), associate_events=("confirmed",))
+    v = _verdict(conn, "request", role_hint="Support Associate")
     assert v.ok and v.application_id == assoc
 
 

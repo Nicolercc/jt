@@ -71,7 +71,7 @@ def test_classifier_can_record_a_candidate_after_repair(tmp_path, monkeypatch):
     monkeypatch.setenv("JT_DB", str(db))
     c = jt.connect()
     with jt.write_txn(c):
-        c.execute("INSERT INTO applications (company, role, lane, applied_on) VALUES ('Ramp','CX','ops','2026-08-01')")
+        c.execute("INSERT INTO applications (company, role, lane, applied_on) VALUES ('Northstar','CX','ops','2026-08-01')")
         c.execute("INSERT INTO raw_messages (gmail_msg_id, received_on, sender, subject, body) VALUES "
                   "('n1', '2026-11-14', 'no-reply@greenhouse.io', 'Thanks', 'We received your application.')")
     import json
