@@ -1103,8 +1103,8 @@ def test_client_options_send_workspace_header(monkeypatch):
 
 
 @pytest.mark.parametrize("evidence, body", [
-    ("Thanks for applying to the Web Developer position",
-     "Thanks for applying to the&nbsp;Web Developer&nbsp;position (ref 1)"),
+    ("Thanks for applying to the Frontend Developer position",
+     "Thanks for applying to the&nbsp;Frontend Developer&nbsp;position (ref 1)"),
     ("We\u2019re confirming your application", "We're confirming your application"),
     ("We're confirming your application", "We\u2019re confirming your application"),
     ("We have received your application for Computer Associate",
@@ -1175,11 +1175,11 @@ def test_evidence_beyond_trimmable_length_is_rejected(conn):
 
 
 def test_long_official_title_matches_saved_short_title(conn):
-    add_app(conn, company="City of New York", role="Workplace Operations Coordinator")
-    app_id = add_app(conn, company="City of New York", role="Web Developer")
+    add_app(conn, company="Example City", role="Facilities Operations Coordinator")
+    app_id = add_app(conn, company="Example City", role="Frontend Developer")
     add_raw(conn)
-    p = proposal(company="City of New York", role_hint=(
-        "Workplace Operations Coordinator, Center for Population Health "
+    p = proposal(company="Example City", role_hint=(
+        "Facilities Operations Coordinator, Center for Population Health "
         "Data Science Administration"))
     classify.process_batch(conn, FakeClient(json.dumps([p])))
 
@@ -1188,8 +1188,8 @@ def test_long_official_title_matches_saved_short_title(conn):
 
 
 @pytest.mark.parametrize("hint, role, contained", [
-    ("Workplace Operations Coordinator, Center X", "Workplace Operations Coordinator", True),
-    ("Solutions Engineer", "Associate Solutions Engineer, Healthcare", True),
+    ("Facilities Operations Coordinator, Center X", "Facilities Operations Coordinator", True),
+    ("Platform Engineer", "Associate Platform Engineer, Health", True),
     ("Engineer", "Backend Engineer", False),
     ("Support Agent", "Support Associate", False),
 ])
@@ -1198,10 +1198,10 @@ def test_role_containment_requires_two_contiguous_words(hint, role, contained):
 
 
 def test_title_contained_in_two_roles_stays_ambiguous(conn):
-    add_app(conn, company="Company A", role="Solutions Engineer")
-    add_app(conn, company="Company A", role="Senior Solutions Engineer")
+    add_app(conn, company="Company A", role="Platform Engineer")
+    add_app(conn, company="Company A", role="Senior Platform Engineer")
     add_raw(conn)
-    p = proposal(role_hint="Senior Solutions Engineer, Healthcare")
+    p = proposal(role_hint="Senior Platform Engineer, Healthcare")
     classify.process_batch(conn, FakeClient(json.dumps([p])))
 
     # Both saved titles appear inside the hint, so neither may be guessed.
