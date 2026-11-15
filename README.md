@@ -42,11 +42,11 @@ Real output from a demo database with four applications (one already rejected):
 ```console
 $ jt stale
 
-  #  COMPANY  ROLE                STATUS     QUIET  ACTION     CONTACT
-  -  -------  ------------------  ---------  -----  ---------  -------
-  2  Linear   Product Engineer    confirmed  10d    FOLLOW UP  -
-  1  Stripe   Backend Engineer    screen     8d     FOLLOW UP  -
-  4  Northstar     Operations Analyst  applied    7d     FOLLOW UP  -
+  #  COMPANY         ROLE                STATUS     QUIET  ACTION     CONTACT
+  -  --------------  ------------------  ---------  -----  ---------  -------
+  2  Northwind Labs  Product Engineer    confirmed  13d    FOLLOW UP  -
+  4  Northstar       Operations Analyst  applied    11d    FOLLOW UP  -
+  1  Globex          Backend Engineer    screen     10d    FOLLOW UP  -
 
 $ jt log 3 screen
 error: rejected is terminal; refusing to append 'screen' to a closed application
@@ -56,9 +56,9 @@ $ echo $?
 
 $ jt show 1
 
-  #1  Stripe - Backend Engineer
+  #1  Globex - Backend Engineer
   lane swe | applied 2026-10-20 | status screen
-  quiet 8 business days | follow-ups sent 0
+  quiet 10 business days | follow-ups sent 0
   action   FOLLOW UP
 
   WHEN        KIND       SOURCE  EVIDENCE
@@ -95,7 +95,7 @@ pipx install "jt-tracker[gmail,classify] @ git+https://github.com/Nicolercc/jt@v
 ## Use
 
 ```bash
-jt add "Stripe" "Backend Engineer" --lane swe --contact recruiter@stripe.com
+jt add "Globex" "Backend Engineer" --lane swe --contact recruiter@globex.example
 jt bulk < today.txt              # 'Company | Role | lane [| url]' per line
 jt list                          # open pipeline; terminal hidden
 jt stale                         # who needs a nudge today  ← the money command

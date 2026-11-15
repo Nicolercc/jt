@@ -43,7 +43,7 @@ going through `connect()` reopens that hole. Always use `INSERT OR IGNORE`
 on `events`, and always open the database through `connect()`.
 
 Usage:
-    jt add "Stripe" "Backend Engineer" --lane swe
+    jt add "Globex" "Backend Engineer" --lane swe
     jt bulk < today.txt
     jt list
     jt stale
