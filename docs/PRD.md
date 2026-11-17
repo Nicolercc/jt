@@ -96,7 +96,7 @@ Job-search updates are scattered across Gmail, assessment platforms and memory. 
 | R16 | An old-shaped candidates table can't crash the classifier | ✅ #44 (self-repair, rows kept) |
 | R17 | No real job-search names in the public repo | ✅ #47, #48 (main + PR text); git history: owner's call |
 | R18 | Everyday commands and live-model failures are pinned by tests | ✅ #46, #49 |
-| R19 | Gmail sign-in path tested | ❌ Next |
+| R19 | Gmail sign-in path tested | ✅ #53: sign-in code 100% exercised (sync.py 74% → 89%); the revoked-token → alert chain tested end to end |
 
 ### P2: after M6
 Native star app (Finder launch, notifications), Apple Reminders for phone reach, Homebrew install for v2 users, Keychain for the OAuth token.
@@ -142,7 +142,7 @@ Engineering Now items are **done**: E1–E4, R9, R11–R18 (see §7). What remai
 
 ### NEXT (after the test week). Exit: an M6 decision recorded with evidence.
 - Run the baseline: `python3 -m evals.run --set holdout --policy compare` and record it in DESIGN.md §10.
-- R10 `jt explain`, R19 Gmail sign-in tests, splitting `jt.py`: chosen by what the test week shows hurts most.
+- R10 `jt explain`, splitting `jt.py`: chosen by what the test week shows hurts most.
 - **M6 decision rule:**
   - Panel opened ≥ 4 of 5 days **and** you wanted it beside Gmail → build the native app.
   - Gmail fallbacks were caused by missing or wrong data → more classifier work.
