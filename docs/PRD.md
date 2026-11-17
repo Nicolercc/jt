@@ -142,7 +142,7 @@ Engineering Now items are **done**: E1–E4, R9, R11–R18 (see §7). What remai
 
 ### NEXT (after the test week). Exit: an M6 decision recorded with evidence.
 - Run the baseline: `python3 -m evals.run --set holdout --policy compare` and record it in DESIGN.md §10.
-- R10 `jt explain`, R19 Gmail sign-in tests, splitting `jt.py`: chosen by what the test week shows hurts most.
+- R10 `jt explain`, splitting `jt.py`: chosen by what the test week shows hurts most.
 - **M6 decision rule:**
   - Panel opened ≥ 4 of 5 days **and** you wanted it beside Gmail → build the native app.
   - Gmail fallbacks were caused by missing or wrong data → more classifier work.
