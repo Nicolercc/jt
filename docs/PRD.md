@@ -96,7 +96,7 @@ Job-search updates are scattered across Gmail, assessment platforms and memory. 
 | R16 | An old-shaped candidates table can't crash the classifier | ✅ #44 (self-repair, rows kept) |
 | R17 | No real job-search names in the public repo | ✅ #47, #48 (main + PR text); git history: owner's call |
 | R18 | Everyday commands and live-model failures are pinned by tests | ✅ #46, #49 |
-| R19 | Gmail sign-in path tested | ❌ Next |
+| R19 | Gmail sign-in path tested | ✅ #53: sign-in code 100% exercised (sync.py 74% → 89%); the revoked-token → alert chain tested end to end |
 
 ### P2: after M6
 Native star app (Finder launch, notifications), Apple Reminders for phone reach, Homebrew install for v2 users, Keychain for the OAuth token.
