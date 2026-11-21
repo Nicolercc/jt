@@ -487,12 +487,12 @@ Not built, on purpose: Postgres, web UI, Rust, Notion sync, browser extension,
 calendar integration, hosted deployment. There is nothing compute-bound here and
 nothing needing a deterministic verification boundary beneath an agent.
 
-**Hard stop rule:** 1,600 lines of Python excluding tests, across the whole
-project. More features should replace code, not accrete around it. The project
-is currently about 2,800 lines, so it is over budget: the next change should
-cut code, not add it.
+**Size rule (since 2026-11-21): every PR justifies its lines.** Each PR states
+what it adds and what it cut, or why nothing could be cut. New features live in
+their own modules; `jt.py` may only shrink.
 
-Earlier drafts set the limit at 600, then 1,200. Both were useful warnings and
-bad budgets: Phase 1 alone breached the first, and the real Gmail/classifier
-implementation breached the second. A budget you breach while building the
-specified core is not a budget.
+This replaced a whole-project line cap. Drafts set the cap at 600, then 1,200,
+then 1,600 lines; the project passed each one while building the specified
+core, and is now about 4,200 lines of Python. A budget you breach every time you
+build the core isn't a budget, so the discipline moved to where decisions
+actually get made: the PR.
