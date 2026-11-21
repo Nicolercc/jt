@@ -71,6 +71,7 @@ variable, the same pattern `jt.py` already uses for `JT_DB`:
 | Oldest unresolved review age threshold | `JT_REVIEW_AGE_ALERT_DAYS` | `2` |
 | Consecutive classify-failure alert threshold | `JT_CLASSIFY_FAILURE_ALERT_THRESHOLD` | `3` |
 | Notifier used by `jt-daily-stale.sh` (override with a fake for tests) | `JT_OSASCRIPT` | `/usr/bin/osascript` |
+| Your own iMessage address for phone alerts (see "Phone alerts") | `JT_PHONE` | unset (Mac banners only) |
 
 None of these need to be set for a single-user, single-machine setup --
 they exist so a second machine, a renamed clone, or a different account
@@ -186,6 +187,35 @@ Audience, click **Publish app** to move it from Testing to **In production**.
 It's free. For a personal app used by you alone, skip Google's verification:
 you'll keep seeing the "unverified app" warning at sign-in, but the token
 stops expiring every 7 days and lasts until you revoke it.
+
+## Phone alerts (iMessage)
+
+The Gmail-outage alert can also reach your phone as an iMessage from this Mac
+to yourself. It names no companies. Task and interview alerts stay on the Mac
+for now.
+
+1. Make sure Messages on this Mac is signed in to iMessage with the same Apple
+   ID as your phone.
+2. Add your own iMessage address (phone number with country code, or Apple ID
+   email) to `~/.jobtrack/jt.env`:
+   ```bash
+   JT_PHONE=+15555550123
+   ```
+3. Grant permission **once, from Terminal**. The first send makes macOS ask
+   whether Terminal (or `osascript`) may control Messages; the hourly job runs
+   without a screen and can't answer that prompt.
+   ```bash
+   osascript -e 'on run argv
+     tell application "Messages" to send (item 2 of argv) to participant (item 1 of argv) of (1st account whose service type = iMessage)
+   end run' "$JT_PHONE" "jt test: phone alerts work"
+   ```
+   Click **OK**. If it was denied earlier: System Settings → Privacy & Security
+   → Automation → allow Messages.
+
+If sending keeps failing, the alert is retried every hour, and after 3 runs the
+menu bar shows "Phone alerts aren't reaching you" with what to check. Messages
+you send yourself may arrive without a sound on some setups; check once that the
+test message notifies on your phone.
 
 ## Verify
 

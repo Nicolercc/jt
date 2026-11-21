@@ -194,8 +194,12 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
         lines.append(f"{SYNC_PROBLEMS.get(fresh['sync_error'], 'Gmail sync problem')} | color=red")
         lines.append("---")
     if alerts_failing:
-        lines.append("Alerts aren't reaching you: allow Script Editor in "
-                     "System Settings → Notifications | color=red")
+        if alerts_failing.get("channel") == "phone":
+            lines.append("Phone alerts aren't reaching you: check Messages is signed in "
+                         "and allowed in Privacy & Security → Automation | color=red")
+        else:
+            lines.append("Alerts aren't reaching you: allow Script Editor in "
+                         "System Settings → Notifications | color=red")
         lines.append("---")
 
     failure = snap.get("failure")

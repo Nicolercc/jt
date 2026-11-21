@@ -246,7 +246,9 @@ scripts/deploy.sh
 Notifications come from `jt notify`, which the hourly job runs first: once per
 event for Gmail sync trouble (after 2 hours), tasks due today or overdue, and new
 applications. `JT_NOTIFY=0` turns them off; `JT_NOTIFY_PRIVATE=1` hides company
-names on the lock screen.
+names on the lock screen. Set `JT_PHONE` to your own iMessage number or Apple ID
+email and the Gmail-outage alert also arrives as an iMessage on your phone
+([setup](docs/automation.md#phone-alerts-imessage)).
 
 **Put the backup in cron on day one.** The likeliest catastrophic failure here
 is not a race condition, it is `rm -rf ~/.jobtrack`:

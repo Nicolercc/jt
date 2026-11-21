@@ -461,3 +461,12 @@ def test_older_snapshot_without_alert_health_renders(plugin):
     lines = plugin.render(snap(), None, NOW)
     assert not lines[0].endswith("⚠")
     assert not any("Alerts aren't reaching you" in x for x in lines)
+
+
+def test_failing_phone_alerts_name_the_phone_fix(plugin):
+    fresh = {"gmail_synced_at": "2026-08-05T15:48:00Z", "classified_at": "2026-08-05T15:49:00Z",
+             "sync_error": None,
+             "alerts_failing": {"channel": "phone", "failed_runs": 3, "last_error": "x"}}
+    lines = plugin.render(snap(freshness=fresh), None, NOW)
+    assert lines[0].endswith("⚠")
+    assert any("Phone alerts aren't reaching you" in x and "Messages" in x for x in lines)
