@@ -101,6 +101,14 @@ def test_sync_problems_are_shown_in_words_and_marked_in_title(plugin, err, text)
     assert any(text in x for x in lines)
 
 
+def test_expired_sign_in_names_a_command_that_signs_in_again(plugin):
+    """The fix runs sync.py with jt's own Python. A bare `jt-sync` can resolve to
+    some other install on PATH, so the panel names the exact command."""
+    s = snap(freshness={"gmail_synced_at": None, "classified_at": None, "sync_error": "auth_expired"})
+    [line] = [x for x in plugin.render(s, None, NOW) if "sign-in expired" in x]
+    assert f"{sys.executable} {ROOT / 'sync.py'}" in line
+
+
 def test_review_count_without_items_points_to_terminal(plugin):
     """An older jt without review items still shows the count, with a way in,
     and never shows raw internal reasons."""

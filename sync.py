@@ -121,13 +121,17 @@ def build_gmail_service(*, persist_credentials: bool = True):
             try:
                 creds.refresh(Request())
             except Exception as e:
-                if "invalid_grant" in str(e):
+                if "invalid_grant" not in str(e):
+                    raise
+                if _is_unattended() or not persist_credentials:
                     raise SystemExit(
                         "error: Gmail token refresh failed with invalid_grant; "
                         "regenerate GOOGLE_TOKEN_PATH before unattended sync can continue"
                     ) from e
-                raise
-        else:
+                # Interactive run: sign in again below. The dead token stays on
+                # disk until the new one overwrites it.
+                creds = None
+        if not creds or not creds.valid:
             if _is_unattended() or not persist_credentials:
                 raise SystemExit(
                     "error: Gmail credentials are not valid for unattended use; "

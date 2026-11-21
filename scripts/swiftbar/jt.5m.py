@@ -154,7 +154,8 @@ def launch_review() -> int:
 
 SYNC_PROBLEMS = {
     "offline": "Offline: Gmail sync couldn't connect",
-    "auth_expired": "Gmail sign-in expired: run jt-sync once in Terminal",
+    "auth_expired": "Gmail sign-in expired: in Terminal run "
+                    + shlex.join([JT_PYTHON, str(Path(JT_REPO) / "sync.py")]),
     "failed": "Last Gmail sync failed: see ~/.jobtrack/logs/jt-sync.jsonl",
 }
 
