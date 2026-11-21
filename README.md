@@ -92,7 +92,117 @@ pipx install "jt-tracker @ git+https://github.com/Nicolercc/jt@v0.3.1"
 pipx install "jt-tracker[gmail,classify] @ git+https://github.com/Nicolercc/jt@v0.3.1"
 ```
 
-## Use
+## How to use jt
+
+This is the operator's manual: what runs by itself, what needs you, and what
+to do when something looks wrong. The design reasoning comes later in this
+file. Setup details live in [docs/automation.md](docs/automation.md).
+
+### What runs by itself, and what needs you
+
+| Every hour, automatically | Needs one decision from you |
+|---|---|
+| Pull new job mail from Gmail (read-only) | **Add** a newly found application and pick its lane |
+| Classify each email: confirmation, screen, interview, rejection, deadline… | **Approve** an email the classifier wasn't sure about |
+| Record events and tasks it's sure about, on applications you already have | **Mark done** or **snooze** a task |
+| Notify you: new applications, tasks due, sync trouble | **Close out** an application that has gone quiet |
+
+**The model never creates an application or skips a legality check.** That
+is a deliberate rule (DESIGN D0.5), not a missing feature. An email can only
+*propose* a new application, so a misread newsletter or a lookalike email
+can't put a fake one in your pipeline. Your part is one click, in the menu bar.
+
+### One-time setup
+
+1. Install jt and its Gmail and classifier extras (see [Install](#install)).
+2. Put the OAuth client, token path and API key in `~/.jobtrack/jt.env`
+   ([docs/automation.md](docs/automation.md#runtime-paths)).
+3. Sign in to Gmail once: `jt-sync --dry-run` opens Google in your browser.
+4. Load the hourly and daily jobs: `scripts/install-launchd.sh --load`.
+5. Install the menu-bar panel ([scripts/swiftbar/README.md](scripts/swiftbar/README.md)).
+6. Allow notifications: System Settings → Notifications → Script Editor → Allow.
+7. **Publish the Google OAuth app** (Google Cloud → Audience → Publish app).
+   In Testing mode Google cancels the sign-in every 7 days and the hourly
+   sync silently stops finding mail.
+
+Check the setup: `jt version`, then `scripts/jt-automation.sh --verify`.
+
+### Reading the menu bar
+
+The title is a status line you can read without opening it:
+
+| Title | Means |
+|---|---|
+| `jt` | nothing due, nothing waiting |
+| `jt 2` | two tasks are due today or overdue |
+| `jt · 3?` | three decisions wait: emails to approve plus applications to add |
+| `jt ⚠` | Gmail sync is failing. Open the menu for the reason |
+
+Open it and work top to bottom. Each section only appears when it has something:
+
+1. **Due**: tasks from emails ("Send availability", "Complete assessment by
+   Friday") and ones you added. **Done**, **Snooze until tomorrow 9 AM**,
+   **Open email**, and **Why** (the quote it came from).
+2. **Needs your decision**: emails the classifier held back. Each shows the
+   sender and a plain-English summary, with one-click answers such as
+   "✓ Record screen for Globex · Backend Engineer", "Add Northstar ·
+   Operations Analyst as a new application", or "Dismiss: not needed".
+3. **New applications found**: confirmation emails for applications jt
+   hasn't seen. **Add as an application → Software / Ops / Comms**, or
+   **Not mine**.
+4. **Suggestions**: "Follow up" after 6 quiet business days, and "Close
+   out?" once an application has been silent a long time. Close-out choices:
+   **Mark as no response**, **I withdrew**, or **Keep it open** (hidden 14
+   days).
+5. **Footer**: when Gmail last synced and the classifier last ran. If either
+   is more than about an hour old, something is wrong; see
+   [When something looks wrong](#when-something-looks-wrong).
+
+### The daily routine (about 5 minutes)
+
+1. **Morning:** open the menu. Clear **Due** first, then **Needs your
+   decision**, then **New applications found**. The goal is a plain `jt`
+   title.
+2. **When you apply somewhere:** do nothing. Most applicant systems email a
+   confirmation. Within the hour it appears under **New applications found**
+   and you pick the lane. If no confirmation comes by the next day, add it
+   yourself:
+   ```bash
+   jt add "Northstar" "Operations Analyst" --lane ops --url https://jobs.example/123
+   ```
+3. **When a recruiter writes, you get an interview, or a rejection lands:**
+   do nothing. The classifier records it, or asks you under **Needs your
+   decision**. Log by hand only what never reached email, such as a phone
+   call: `jt log 3 screen --note "30 min with recruiter"`.
+4. **Evening (optional):** `jt stale` for a full-pipeline view of who needs a
+   nudge.
+
+### The weekly review (about 15 minutes)
+
+```bash
+jt priority            # top 10 open applications by next-action value
+jt priority --explain 3
+jt stale               # every open application, quiet days, and FOLLOW UP / CLOSE OUT
+jt ignored             # non-job mail kept out of review; `jt ignored restore <#>` if one was a mistake
+jt backup ~/jobtrack-backups && jt verify-backup ~/jobtrack-backups/<newest file>
+```
+
+Close out anything you've stopped caring about. A pipeline of 40 live-looking
+applications where 30 are dead makes every "what's next" answer wrong.
+
+### When something looks wrong
+
+| You see | It means | Do this |
+|---|---|---|
+| `⚠` and "Gmail sign-in expired" | Google cancelled jt's Gmail access (every 7 days in Testing mode) | Follow [When the Gmail sign-in expires](docs/automation.md#when-the-gmail-sign-in-expires): move the dead token aside, sign in, kick the hourly job. Then publish the OAuth app so it stops recurring. |
+| An application you sent never showed up | No confirmation email, the email didn't match the Gmail search (no `jobsearch` label, not in `GMAIL_QUERY`), or sync is down | Check the footer's "synced" time. Run `jt sync --audit --since <date>` to list job mail jt hasn't imported. If the email exists, widen `GMAIL_QUERY`; otherwise `jt add` it. |
+| "Classified" in the footer is hours old | The classifier is failing (API key, quota, network) | `tail ~/.jobtrack/logs/jt-classify.jsonl`, then `jt review stale` |
+| The same decision keeps coming back | A review item is still open | `jt review` lists each one with the exact command that resolves it |
+| A daily 8:30 notification about review health | Something has waited for a decision for too long | Clear **Needs your decision** |
+| The panel says "Showing data from …" | The panel couldn't read the tracker and is showing its last copy | `jt today` in Terminal shows the real error |
+| `jt version` differs from GitHub `main` | Production hasn't been deployed since the last merge | `scripts/deploy.sh --dry-run`, then `scripts/deploy.sh` |
+
+### Command reference
 
 ```bash
 jt add "Globex" "Backend Engineer" --lane swe --contact recruiter@globex.example
@@ -121,10 +231,9 @@ jt backup ~/jobtrack-backups      # timestamped; add --no-bodies for cloud folde
 jt verify-backup ~/jobtrack-backups/jobs-2026-08-21T200000.db
 ```
 
-Daily rhythm, ninety seconds: `jt stale` with coffee, `jt bulk` before bed. Or
-skip the terminal: the menu-bar panel (`scripts/swiftbar/README.md`) shows what's
-due, what needs a decision, new applications, and stale ones to close out, each
-with one-click actions.
+Lanes are `swe` (software roles), `ops` (operations, benefits, admin) and
+`comms` (writing, social, communications). `--on` takes `YYYY-MM-DD`,
+`today` or `yesterday`; `--due` takes `YYYY-MM-DD`, `today` or `tomorrow`.
 
 **Deploying to the checkout launchd runs** is one command, which backs up and
 verifies the database before pulling and checks the hourly job afterwards:
@@ -185,6 +294,10 @@ jt-sync
 `jt-sync` opens the database through `jt.connect()`, uses the read-only Gmail
 scope, paginates, retries 429/5xx and 403 rate-limit responses, overlaps the watermark by two
 days, and inserts with `INSERT OR IGNORE`. It does not classify anything.
+
+The first `jt-sync` opens Google in your browser and saves the token. If a
+saved token later stops working (`invalid_grant`), rerunning `jt-sync` won't
+replace it. Follow [When the Gmail sign-in expires](docs/automation.md#when-the-gmail-sign-in-expires).
 
 The default searches the configured label plus assessment and scheduling
 platforms and recruiting subject phrases. Set `GMAIL_QUERY` to replace the

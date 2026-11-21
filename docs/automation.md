@@ -39,7 +39,9 @@ git clone <repo> jt && cd jt
 /opt/homebrew/bin/python3.12 -m venv .venv
 .venv/bin/python -m pip install -e ".[gmail,classify,dev]"
 
-# one-time interactive OAuth, writes ~/.jobtrack/token.json
+# first sign-in on this machine (no token yet): opens Google in your browser
+# and saves ~/.jobtrack/token.json, even in --dry-run. For an EXPIRED
+# sign-in this is not enough; see "When the Gmail sign-in expires" below.
 .venv/bin/python sync.py --dry-run
 
 # render + load the launchd jobs for this machine
@@ -115,6 +117,75 @@ error, the local files are not the problem. Create or reconfigure the OAuth
 app audience in Google Cloud so it is available to the Gmail account that
 will run sync. For a personal Gmail account, use an External audience and
 add that Gmail address as a test user while the app is in Testing mode.
+
+## When the Gmail sign-in expires
+
+**Symptoms** (any one):
+
+- the menu bar shows `⚠` and "Gmail sign-in expired";
+- `~/.jobtrack/logs/jt-sync.jsonl` ends with `Gmail token refresh failed with
+  invalid_grant` or `GOOGLE_TOKEN_PATH does not exist`;
+- applications you know you sent never show up under "New applications found".
+
+**Why it happens.** Google cancels the saved token every 7 days while the
+OAuth app in Google Cloud is in **Testing** mode. Changing your Google
+password or removing jt's access in your Google account cancels it too.
+Nothing is lost while it's expired: the next good sync looks back past the
+last successful day and picks up everything it missed.
+
+**Why `sync.py --dry-run` does not fix it.** When `token.json` exists but
+Google has cancelled it, sync stops with the `invalid_grant` error before it
+ever offers a new sign-in, in every mode. The dead file has to be moved out
+of the way first. `JT_UNATTENDED=1` (set by launchd) also blocks the
+browser sign-in, so run the steps below in a normal Terminal.
+
+**Fix (about 2 minutes, on the Mac that runs jt):**
+
+```bash
+cd ~/Developer/jt
+
+# 1. move the dead token aside (kept, not deleted, in case you need to compare)
+mv ~/.jobtrack/token.json ~/.jobtrack/token.json.dead-$(date +%Y%m%d)
+
+# 2. load jt's paths; do NOT set JT_UNATTENDED here
+set -a; . ~/.jobtrack/jt.env; set +a
+
+# 3. sign in and sync. Prints a Google link and usually opens it for you.
+#    Waits 15 minutes for you to finish.
+GOOGLE_OAUTH_TIMEOUT_SECONDS=900 .venv/bin/python sync.py
+
+# 4. classify what just came in now instead of waiting for the next hour
+launchctl kickstart gui/$(id -u)/dev.nicole.jt.sync
+```
+
+In the browser:
+
+1. Open the link **on this same Mac**. Google sends you back to
+   `http://localhost:<port>/`, which only this Mac can answer. A phone will
+   show an error.
+2. Choose the Gmail account jt reads.
+3. "Google hasn't verified this app" is expected for your own app: click
+   **Advanced**, then **Go to (app name)**.
+4. Tick the Gmail read-only box and click **Continue**.
+5. The page should say "The authentication flow has completed." Step 3 then
+   prints `inspected N, inserted N`.
+
+If the link opens but the last page errors on `localhost:<port>`, step 3 has
+probably timed out. Rerun step 3 and finish within the window.
+
+**Check it worked:**
+
+```bash
+ls -l ~/.jobtrack/token.json                   # exists, mode -rw-------
+tail -1 ~/.jobtrack/logs/jt-sync.jsonl         # "event": "success"
+.venv/bin/python jt.py candidates              # anything new from email
+```
+
+**Stop it recurring:** in Google Cloud Console → Google Auth Platform →
+Audience, click **Publish app** to move it from Testing to **In production**.
+It's free. For a personal app used by you alone, skip Google's verification:
+you'll keep seeing the "unverified app" warning at sign-in, but the token
+stops expiring every 7 days and lasts until you revoke it.
 
 ## Verify
 
