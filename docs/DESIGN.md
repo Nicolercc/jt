@@ -158,7 +158,8 @@ This is the only thing a frontend may read. Frontends never open the database.
   "freshness": {
     "gmail_synced_at": "2026-11-12T13:00:00Z",
     "classified_at": "2026-11-12T13:01:12Z",
-    "sync_error": null
+    "sync_error": null,
+    "alerts_failing": null
   },
   "actions": [
     {
@@ -190,6 +191,7 @@ Rules:
 - An application with any open or snoozed action produces no suggestion (D1 suppression rule).
 - Adding fields is fine in v1. Renaming or removing a field, or changing a type, bumps `schema_version`.
 - `sync_error` is one of `null`, `"offline"`, `"auth_expired"`, `"failed"`. The UI shows it in words, not only color.
+- `alerts_failing` is `null`, or `{"failed_runs": n, "last_error": "..."}` once 3 `jt notify` runs in a row delivered nothing (added 2026-11-21, CEO review F2). The UI shows it in words and with ⚠.
 - Write paths for the UI go through commands, not the JSON: `jt action done <id>`, `jt action snooze <id> --until ...`, `jt review approve|reject <id>`. Each must accept `--json` and exit non-zero on failure.
 - Contract tests use fixed fixtures for six states: healthy, empty, offline, auth expired, ambiguous match, overdue.
 

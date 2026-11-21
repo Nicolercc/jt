@@ -8,6 +8,7 @@ due and shows them.
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -86,14 +87,63 @@ def notification_plan(conn, now: datetime) -> list[dict]:
 def record_notified(conn, items: list[dict]) -> None:
     stamp = jt._utc_iso(datetime.now(timezone.utc))
     with jt.write_txn(conn):
-        for n in items:
-            conn.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)",
-                         (f"notified:{n['key']}", stamp))
+        _record_notified_in_txn(conn, items, stamp)
 
 
-def send_notification(title: str, message: str) -> None:
-    subprocess.run(["osascript", "-e", OSASCRIPT_NOTIFY, title, message],
-                   capture_output=True, timeout=10, check=False)
+def _record_notified_in_txn(conn, items: list[dict], stamp: str) -> None:
+    for n in items:
+        conn.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)",
+                     (f"notified:{n['key']}", stamp))
+
+
+NOTIFY_TIMEOUT_SECONDS = 10
+# Consecutive `jt notify` runs in which nothing could be delivered before the
+# menu and `jt today` say alerts aren't reaching you (CEO review F2).
+ALERTS_FAILING_AFTER_RUNS = 3
+ALERTS_FAILING_HELP = ("Alerts aren't reaching you: check System Settings → Notifications "
+                       "→ Script Editor → Allow")
+
+
+def send_notification(title: str, message: str) -> str | None:
+    """Show one macOS notification. Returns None when osascript accepted it,
+    otherwise a short reason, so a blocked alert is never mistaken for a sent one."""
+    try:
+        proc = subprocess.run(["osascript", "-e", OSASCRIPT_NOTIFY, title, message],
+                              capture_output=True, text=True,
+                              timeout=NOTIFY_TIMEOUT_SECONDS, check=False)
+    except subprocess.TimeoutExpired:
+        return f"osascript timed out after {NOTIFY_TIMEOUT_SECONDS}s"
+    except FileNotFoundError as e:
+        return f"osascript not found: {e}"
+    except OSError as e:
+        return f"osascript failed to start: {e}"
+    if proc.returncode != 0:
+        detail = (proc.stderr or "").strip().splitlines()
+        return f"osascript exited {proc.returncode}" + (f": {detail[-1]}" if detail else "")
+    return None
+
+
+def record_delivery(conn, delivered: list[dict], last_error: str | None) -> None:
+    """Record what reached the screen, in one transaction. A run where nothing
+    could be delivered counts toward the failing-alerts warning; any delivery
+    resets it."""
+    with jt.write_txn(conn):
+        _record_notified_in_txn(conn, delivered, jt._utc_iso(datetime.now(timezone.utc)))
+        if delivered:
+            conn.execute("DELETE FROM sync_state WHERE key IN "
+                         "('notify_failed_runs', 'notify_last_error')")
+        elif last_error:
+            runs = int(jt._fresh(conn, "notify_failed_runs") or 0) + 1
+            conn.executemany("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)",
+                             [("notify_failed_runs", str(runs)),
+                              ("notify_last_error", last_error)])
+
+
+def alerts_failing(conn) -> dict | None:
+    runs = int(jt._fresh(conn, "notify_failed_runs") or 0)
+    if runs < ALERTS_FAILING_AFTER_RUNS:
+        return None
+    return {"failed_runs": runs, "last_error": jt._fresh(conn, "notify_last_error")}
 
 
 def cmd_notify(conn, a):
@@ -111,7 +161,16 @@ def cmd_notify(conn, a):
     if os.environ.get("JT_NOTIFY") == "0":
         print("notifications are off (JT_NOTIFY=0)")
         return
+    delivered, errors = [], []
     for n in items:
-        send_notification(n["title"], n["message"])
-    record_notified(conn, items)
-    print(f"sent {len(items)} notification(s)")
+        error = send_notification(n["title"], n["message"])
+        if error is None:
+            delivered.append(n)
+        else:
+            errors.append(error)
+    record_delivery(conn, delivered, errors[-1] if errors else None)
+    print(f"sent {len(delivered)} notification(s)")
+    if errors:
+        print(f"error: {len(errors)} notification(s) not delivered ({errors[-1]}); "
+              "they will be retried on the next run", file=sys.stderr)
+        sys.exit(1)

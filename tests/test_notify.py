@@ -119,7 +119,7 @@ def test_private_mode_hides_company_names(conn, monkeypatch):
 
 def test_notification_text_is_passed_as_arguments_not_code(monkeypatch):
     calls = []
-    monkeypatch.setattr(notify.subprocess, "run", lambda args, **k: calls.append(args))
+    monkeypatch.setattr(notify.subprocess, "run", lambda args, **k: calls.append(args) or _Proc(0))
     notify.send_notification('Say "hi"', 'x" & (do shell script "rm -rf ~") & "')
     args = calls[0]
     assert args[0] == "osascript"
@@ -175,3 +175,110 @@ def test_notify_runs_from_the_script_the_way_launchd_calls_it(tmp_path):
                        env=env, timeout=30, cwd=root)
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip().splitlines()[-1] == "__main__"
+
+
+# ---------------------------------------------------------------- delivery (T1)
+# CEO review 2026-11-21, F2: a blocked or broken notification used to be
+# recorded as sent, so the alert meant to catch silent failures failed silently.
+
+class _Proc:
+    def __init__(self, returncode=0, stderr=""):
+        self.returncode, self.stderr = returncode, stderr
+
+
+def _due_task(conn):
+    jt.add_action(conn, 10, "Complete Northstar assessment", due_date="2026-11-14")
+
+
+def _failing_send(calls):
+    def send(t, m):
+        calls.append(t)
+        return "osascript exited 1: Not authorized to send Apple events"
+    return send
+
+
+@pytest.mark.parametrize("run, expected", [
+    (lambda args, **k: _Proc(0), None),
+    (lambda args, **k: _Proc(1, "execution error: Not authorized (-1743)\n"),
+     "osascript exited 1: execution error: Not authorized (-1743)"),
+])
+def test_send_notification_reports_delivery(monkeypatch, run, expected):
+    monkeypatch.setattr(notify.subprocess, "run", run)
+    assert notify.send_notification("t", "m") == expected
+
+
+@pytest.mark.parametrize("exc, expected", [
+    (notify.subprocess.TimeoutExpired(cmd="osascript", timeout=10), "osascript timed out after 10s"),
+    (FileNotFoundError("osascript"), "osascript not found: osascript"),
+])
+def test_send_notification_reports_crashes(monkeypatch, exc, expected):
+    def run(args, **k):
+        raise exc
+    monkeypatch.setattr(notify.subprocess, "run", run)
+    assert notify.send_notification("t", "m") == expected
+
+
+def test_failed_send_is_not_recorded_and_is_retried(conn, monkeypatch, capsys):
+    calls: list[str] = []
+    monkeypatch.setattr(notify, "send_notification", _failing_send(calls))
+    monkeypatch.setattr(notify, "_notify_now", lambda tz: NOW)
+    _due_task(conn)
+    with pytest.raises(SystemExit) as e:
+        jt.main_args(["notify"])
+    assert e.value.code == 1
+    assert "not delivered" in capsys.readouterr().err
+    assert len(plan(conn)) == 1                      # still due: retried next run
+    monkeypatch.setattr(notify, "send_notification", lambda t, m: None)
+    jt.main_args(["notify"])
+    assert plan(conn) == []                          # delivered, now recorded
+
+
+def test_three_failed_runs_raise_a_visible_warning(conn, monkeypatch, capsys):
+    calls: list[str] = []
+    monkeypatch.setattr(notify, "send_notification", _failing_send(calls))
+    monkeypatch.setattr(notify, "_notify_now", lambda tz: NOW)
+    _due_task(conn)
+    for n in range(3):
+        assert notify.alerts_failing(conn) is None, f"warned after {n} failed run(s)"
+        with pytest.raises(SystemExit):
+            jt.main_args(["notify"])
+    warn = notify.alerts_failing(conn)
+    assert warn == {"failed_runs": 3,
+                    "last_error": "osascript exited 1: Not authorized to send Apple events"}
+    snap = jt.today_snapshot(conn, NOW.date(), NOW, NY)
+    assert snap["freshness"]["alerts_failing"] == warn
+    capsys.readouterr()
+    jt.main_args(["today", "--on", "2026-11-14"])
+    assert "Alerts aren't reaching you" in capsys.readouterr().out
+
+
+def test_a_delivered_alert_clears_the_warning(conn, monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(notify, "send_notification", _failing_send(calls))
+    monkeypatch.setattr(notify, "_notify_now", lambda tz: NOW)
+    _due_task(conn)
+    for _ in range(3):
+        with pytest.raises(SystemExit):
+            jt.main_args(["notify"])
+    monkeypatch.setattr(notify, "send_notification", lambda t, m: None)
+    jt.main_args(["notify"])
+    assert notify.alerts_failing(conn) is None
+    assert jt.today_snapshot(conn, NOW.date(), NOW, NY)["freshness"]["alerts_failing"] is None
+
+
+def test_partial_delivery_records_only_what_was_sent(conn, monkeypatch):
+    sent = []
+
+    def send(t, m):
+        if t.startswith("Overdue"):
+            return "osascript exited 1: boom"
+        sent.append(t)
+        return None
+    monkeypatch.setattr(notify, "send_notification", send)
+    monkeypatch.setattr(notify, "_notify_now", lambda tz: NOW)
+    _due_task(conn)
+    jt.add_action(conn, 10, "Send availability", due_date="2026-11-12")
+    with pytest.raises(SystemExit):
+        jt.main_args(["notify"])
+    assert sent == ["Due today: Complete Northstar assessment"]
+    assert [n["title"] for n in plan(conn)] == ["Overdue: Send availability"]

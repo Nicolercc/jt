@@ -444,3 +444,20 @@ def test_review_summary_is_not_cut_off_for_long_company_names(plugin):
              review={"pending": 1, "oldest_days": 0, "top": None,
                      "items": [item(choices=[]) | {"summary": summary}]})
     assert any("jt isn't sure." in x for x in plugin.render(s, None, NOW))
+
+
+def test_failing_alerts_are_shown_in_words_and_marked_in_title(plugin):
+    """CEO review F2: if macOS keeps refusing jt's notifications, the menu says
+    so, because the alerts themselves can't."""
+    fresh = {"gmail_synced_at": "2026-08-05T15:48:00Z", "classified_at": "2026-08-05T15:49:00Z",
+             "sync_error": None,
+             "alerts_failing": {"failed_runs": 3, "last_error": "osascript exited 1: denied"}}
+    lines = plugin.render(snap(freshness=fresh), None, NOW)
+    assert lines[0].endswith("⚠")
+    assert any("Alerts aren't reaching you" in x and "color=red" in x for x in lines)
+
+
+def test_older_snapshot_without_alert_health_renders(plugin):
+    lines = plugin.render(snap(), None, NOW)
+    assert not lines[0].endswith("⚠")
+    assert not any("Alerts aren't reaching you" in x for x in lines)
