@@ -194,7 +194,7 @@ applications where 30 are dead makes every "what's next" answer wrong.
 
 | You see | It means | Do this |
 |---|---|---|
-| `⚠` and "Gmail sign-in expired" | Google cancelled jt's Gmail access (every 7 days in Testing mode) | Follow [When the Gmail sign-in expires](docs/automation.md#when-the-gmail-sign-in-expires): move the dead token aside, sign in, kick the hourly job. Then publish the OAuth app so it stops recurring. |
+| `⚠` and "Gmail sign-in expired" | Google cancelled jt's Gmail access (every 7 days in Testing mode) | Follow [When the Gmail sign-in expires](docs/automation.md#when-the-gmail-sign-in-expires): run `sync.py` once in Terminal to sign in again, then kick the hourly job. Then publish the OAuth app so it stops recurring. |
 | An application you sent never showed up | No confirmation email, the email didn't match the Gmail search (no `jobsearch` label, not in `GMAIL_QUERY`), or sync is down | Check the footer's "synced" time. Run `jt sync --audit --since <date>` to list job mail jt hasn't imported. If the email exists, widen `GMAIL_QUERY`; otherwise `jt add` it. |
 | "Classified" in the footer is hours old | The classifier is failing (API key, quota, network) | `tail ~/.jobtrack/logs/jt-classify.jsonl`, then `jt review stale` |
 | The same decision keeps coming back | A review item is still open | `jt review` lists each one with the exact command that resolves it |
