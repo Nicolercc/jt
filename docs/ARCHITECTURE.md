@@ -47,7 +47,8 @@ raw_messages ─────────────► classify.py ──► An
 
 | Component | File(s) | Responsibility |
 |---|---|---|
-| Tracker core | `jt.py` (~2,400 lines) | Schema and migrations (incl. self-repair), `write_txn`, status derivation, actions, Today read model, review items, notifications, CLI, backups, version |
+| Tracker core | `jt.py` (~2,400 lines) | Schema and migrations (incl. self-repair), `write_txn`, status derivation, actions, Today read model, review items, CLI, backups, version |
+| Notifications | `notify.py` | Which alerts are due (sync trouble, due tasks, new applications), deduplication, sending through macOS |
 | Transition rules | `transitions.py` | Allowed transitions. **Owned by Nicole; agents never edit without her decision.** |
 | Gmail sync | `sync.py` | OAuth, paginated fetch, retry (429, 5xx, 403 rate limit), watermark, freshness, `jt sync --audit` |
 | Classifier | `classify.py` | Tool schema, validation pipeline, role inference, D3 policy, request → action with reminder merging, ignored bucket, candidates |

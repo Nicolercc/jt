@@ -29,7 +29,7 @@ jt-classify = "classify:main"
 jt-eval = "evals.run:main"
 
 [tool.setuptools]
-py-modules = ["jt", "transitions", "sync", "classify", "jt_eval"]
+py-modules = ["jt", "notify", "transitions", "sync", "classify", "jt_eval"]
 packages = ["evals"]
 
 [tool.setuptools.package-data]
@@ -41,7 +41,7 @@ testpaths = ["tests"]
 
 [tool.mypy]
 python_version = "3.11"
-files = ["jt.py", "transitions.py", "sync.py", "classify.py", "jt_eval.py", "evals", "scripts/swiftbar/jt.5m.py"]
+files = ["jt.py", "notify.py", "transitions.py", "sync.py", "classify.py", "jt_eval.py", "evals", "scripts/swiftbar/jt.5m.py"]
 ignore_missing_imports = true
 warn_unused_ignores = true
 warn_redundant_casts = true

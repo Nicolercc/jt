@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import jt
+import notify
 import sync
 
 
@@ -201,7 +202,7 @@ def test_revoked_token_reaches_you_as_a_sign_in_alert(google, tmp_path, monkeypa
         sync.main()
     assert jt.sync_error_state() == "auth_expired"
     conn = jt.connect()
-    [alert] = jt.notification_plan(conn, datetime(2026, 11, 14, 9, tzinfo=ZoneInfo("America/New_York")))
+    [alert] = notify.notification_plan(conn, datetime(2026, 11, 14, 9, tzinfo=ZoneInfo("America/New_York")))
     conn.close()
     assert alert["title"] == "jt can't read your Gmail"
     assert "sign-in expired" in alert["message"]
