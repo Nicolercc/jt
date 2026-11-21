@@ -1107,7 +1107,8 @@ def today_snapshot(conn, today: date, now: datetime, tz: ZoneInfo) -> dict:
         "badge": {"due": len(actions), "reviews": stats["total"], "candidates": len(candidates)},
         "freshness": {"gmail_synced_at": _fresh(conn, "gmail_synced_at"),
                       "classified_at": _fresh(conn, "classified_at"),
-                      "sync_error": sync_error_state()},
+                      "sync_error": sync_error_state(),
+                      "alerts_failing": _alerts_failing(conn)},
         "actions": actions,
         "suggestions": suggestions,
         "recorded": recorded,
@@ -1416,6 +1417,10 @@ def cmd_today(conn, a):
         print(table(["ACT", "APP", "COMPANY", "ROLE", "DUE", "ACTION"], rows))
     else:
         print("No actions due.")
+    failing = _alerts_failing(conn)
+    if failing:
+        import notify  # imported lazily: notify imports jt
+        print(f"  !! {notify.ALERTS_FAILING_HELP}\n     last error: {failing['last_error']}")
     print(review_banner(conn))
 
 
@@ -2139,6 +2144,11 @@ def cmd_resolve(conn, a):
 def cmd_notify(conn, a):
     import notify  # imported lazily: notify imports jt
     notify.cmd_notify(conn, a)
+
+
+def _alerts_failing(conn) -> dict | None:
+    import notify
+    return notify.alerts_failing(conn)
 
 
 def cmd_version(conn, a):

@@ -182,7 +182,8 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
     decisions = badge["reviews"] + badge.get("candidates", 0)
     if decisions:
         title += f" · {decisions}?"
-    if fresh["sync_error"]:
+    alerts_failing = fresh.get("alerts_failing")  # absent in older jt snapshots
+    if fresh["sync_error"] or alerts_failing:
         title += " ⚠"
     lines = [title, "---"]
 
@@ -191,6 +192,10 @@ def render(snap: dict | None, error: str | None, now: datetime | None = None) ->
         lines.append("---")
     if fresh["sync_error"]:
         lines.append(f"{SYNC_PROBLEMS.get(fresh['sync_error'], 'Gmail sync problem')} | color=red")
+        lines.append("---")
+    if alerts_failing:
+        lines.append("Alerts aren't reaching you: allow Script Editor in "
+                     "System Settings → Notifications | color=red")
         lines.append("---")
 
     failure = snap.get("failure")

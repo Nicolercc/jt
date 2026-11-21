@@ -18,7 +18,7 @@ TOP_KEYS = {"schema_version", "generated_at", "badge", "freshness", "actions",
 ACTION_KEYS = {"action_id", "application_id", "company", "role", "description", "due",
                "overdue", "origin", "reason", "gmail_msg_id", "gmail_url"}
 SUGGESTION_KEYS = {"application_id", "company", "role", "kind", "reason", "close_choices"}
-FRESHNESS_KEYS = {"gmail_synced_at", "classified_at", "sync_error"}
+FRESHNESS_KEYS = {"gmail_synced_at", "classified_at", "sync_error", "alerts_failing"}
 
 
 @pytest.fixture
@@ -71,7 +71,8 @@ def test_state_empty(conn):
     check_shape(s)
     assert s["badge"] == {"due": 0, "reviews": 0, "candidates": 0}
     assert s["actions"] == [] and s["suggestions"] == []
-    assert s["freshness"] == {"gmail_synced_at": None, "classified_at": None, "sync_error": None}
+    assert s["freshness"] == {"gmail_synced_at": None, "classified_at": None, "sync_error": None,
+                              "alerts_failing": None}
     assert s["review"] == {"pending": 0, "oldest_days": 0, "top": None, "items": []}
 
 
@@ -85,7 +86,8 @@ def test_state_healthy(conn, tmp_path):
     check_shape(s)
     assert s["badge"] == {"due": 1, "reviews": 0, "candidates": 0}
     assert s["freshness"] == {"gmail_synced_at": "2026-08-05T15:00:00Z",
-                              "classified_at": "2026-08-05T15:01:00Z", "sync_error": None}
+                              "classified_at": "2026-08-05T15:01:00Z", "sync_error": None,
+                              "alerts_failing": None}
     act = s["actions"][0]
     assert act["description"] == "Send availability" and act["reason"] == "Recruiter asked"
     assert act["due"] == {"kind": "date", "value": "2026-08-05"} and act["overdue"] is False

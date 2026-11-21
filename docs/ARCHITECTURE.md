@@ -109,6 +109,7 @@ The text goes to `osascript` as arguments, never pasted into the script.
 | Failure | Behavior | Where you see it |
 |---|---|---|
 | Gmail sign-in expired, offline, other | Sync logs it; no watermark move | **Notification after 2 h**; panel title ⚠ with words; `freshness.sync_error` |
+| macOS refuses or drops a notification | Not recorded as sent; retried next run; `jt notify` exits 1 | After 3 failed runs: panel ⚠ "Alerts aren't reaching you", `jt today`, `freshness.alerts_failing` |
 | Gmail rate limit (403/429) | Retry with ≥ 20 s waits, 5 attempts | `jt-sync.jsonl` |
 | Model down or malformed output | Nothing written; messages go to review or stay unprocessed | `jt-classify.jsonl`, review count |
 | Concurrent writers | `BEGIN IMMEDIATE` serializes; the loser rechecks and goes to review | Race test |
