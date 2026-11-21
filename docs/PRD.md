@@ -1,6 +1,6 @@
 # jt — product requirements
 
-**Owner:** Nicole Rodriguez · **Last updated:** 2026-11-13 (after #49) · **Status:** v1 (for me) in progress
+**Owner:** Nicole Rodriguez · **Last updated:** 2026-11-21 (after #55; roadmap §10.1 added) · **Status:** v1 (for me) in progress
 **This is the plan.** Work that isn't in the **Now** list below doesn't start, for Claude, Codex or anyone else, until this file changes.
 How it works: [ARCHITECTURE.md](ARCHITECTURE.md). Why decisions were made: [DESIGN.md](DESIGN.md).
 
@@ -58,7 +58,7 @@ Job-search updates are scattered across Gmail, assessment platforms and memory. 
 | Metric | Target | Source | Current |
 |---|---|---|---|
 | **Explicit deadlines missed** (north star) | 0 per week | Test-week log + audit | Unknown; Northstar was missed before the fixes |
-| Job emails missing from jt | 0 per week | `jt sync --audit` | 13 in 90 days before widening; search widened. A 6-day sign-in outage (Nov 6–12) now triggers an alert (#43) |
+| Job emails missing from jt | 0 per week | `jt sync --audit` | 13 in 90 days before widening; search widened. A 6-day sign-in outage (Nov 6–12) now triggers an alert (#43). A second ~70-hour outage (Nov 18–21, Testing-mode expiry) went unnoticed despite that alert; see N-1 |
 | Wrong auto-updates | ≤ 2 per 100 emails | Eval holdout | Unmeasured (n = 5) |
 | Wrong terminal auto-commits | 0 | Eval + live | 0 (D3 caught a wrong "ghosted" live) |
 | Review workload | ≤ 5 items per active day | `review_queue` | 0 pending after cleanup (non-job mail now goes to `jt ignored`) |
@@ -97,6 +97,7 @@ Job-search updates are scattered across Gmail, assessment platforms and memory. 
 | R17 | No real job-search names in the public repo | ✅ #47, #48 (main + PR text); git history: owner's call |
 | R18 | Everyday commands and live-model failures are pinned by tests | ✅ #46, #49 |
 | R19 | Gmail sign-in path tested | ✅ #53: sign-in code 100% exercised (sync.py 74% → 89%); the revoked-token → alert chain tested end to end |
+| R20 | An expired sign-in is recoverable by running `jt-sync` once, with a runbook | ✅ #54 (runbook + README guide), #55 (interactive sync replaces a revoked token), deployed b7ace33 |
 
 ### P2: after M6
 Native star app (Finder launch, notifications), Apple Reminders for phone reach, Homebrew install for v2 users, Keychain for the OAuth token.
@@ -136,7 +137,7 @@ Engineering Now items are **done**: E1–E4, R9, R11–R18 (see §7). What remai
 | **Now-1** | Nicole | ✅ Clear the review queue | Done: 0 pending |
 | **Now-2** | Nicole | **Start the test week:** use the menu instead of Gmail; close out the 10 stale applications; note every time you fall back to Gmail and why | 5 active days logged |
 | **Now-3** | Nicole | Label the 117 emails (`python3 evals/label_server.py`), deadline and assessment emails first | `evals.dataset check` shows ≥ 150 labeled |
-| **Now-4** | Nicole | **Urgent, before ~Nov 19:** switch Google OAuth from Testing to In production (free) | No more weekly sign-in expiry |
+| **Now-4** | Nicole | **Overdue (it expired Nov 18):** switch Google OAuth from Testing to In production (free), then sign in once more so the token is a production one | Audience page says "In production"; no `⚠` after Nov 28 |
 | **Now-5** | Nicole | Confirm notifications reach you (System Settings → Notifications → Script Editor → Allow) and keep the Mac plugged in | A test notification is seen |
 | **Now-6** | Nicole | Approve removing leftover local copies and the running demo app | ≤ 1 dev copy + production |
 
@@ -154,6 +155,35 @@ Engineering Now items are **done**: E1–E4, R9, R11–R18 (see §7). What remai
 - Write-up and demo (M7), then build-in-public posts.
 - v3 public launch checklist (signing, notarization, Google verification, model choice): see the conversation notes; start only after the v2 metrics hold.
 
+### 10.1 Roadmap beyond v1 (added 2026-11-21)
+
+**Where jt stands (self-rating, 2026-11-21):**
+
+| As… | Score | Why |
+|---|---|---|
+| An engineering artifact | 8.5 / 10 | Invariants enforced by SQLite, propose/commit boundary, 430 tests, CI, backup-first deploy, decision log |
+| A tool that does the job for you | 5 / 10 | A ~70-hour silent outage; recovery needed an engineer; every new application still needs a click; reports what happened, not what works |
+| Something others could use | 2 / 10 | Needs Google Cloud, an OAuth client, an API key, launchd, SwiftBar and Python |
+
+The gap between the first and second rows is the roadmap: the engine is done; the experience is still an engineer's.
+
+**Rules for this list.** Nothing here starts until it moves into **Now**. Each item names the evidence that unlocks it. Items marked ⚠ conflict with a §5 non-goal or a DESIGN decision; that decision has to be reopened with evidence first, not worked around.
+
+| # | Item | What done looks like | Start when | Tier |
+|---|---|---|---|---|
+| **N-1** | **Never go blind silently.** A sync down for 2 hours pages the phone (ntfy, Pushover or iMessage), not only the Mac. The menu bar's sign-in warning gets a **Sign in again** button that runs the sign-in itself. A weekly heartbeat email: no email means jt is dead. | The next outage is noticed within 2 hours, and recovered without Terminal | **Now-eligible.** The Nov 18–21 outage is the evidence (R13's Mac alert fired and was missed) | Next |
+| **N-2** | **Zero-click capture.** ⚠ *Reopens D0.5.* Auto-add an application when the sender is a known ATS domain, company and role are quoted, and the mail went to your address; show "Added · Undo" for 24 hours. | 0 wrong auto-adds across the next 50 confirmations, or it reverts to asking | After Now-2's test week shows how many candidate clicks there are, and N-1 has shipped | Next |
+| **N-3** | **Prove the classifier.** Same as Now-3/R7, then publish precision and recall with intervals in the README. *Ambitious:* a weekly private eval run that updates an accuracy badge. | Published numbers with sample sizes | Now-3 done | Next |
+| **L-1** | **Close the loop with the resume pipeline.** The tailored-resume workflow and jt are two systems today (the resume side keeps its own `tracker.csv`). Make jt the system of record: each application links to the exact resume, requirements and answers sent. Then report what works: response rate by resume variant, lane, source, ATS and day sent. | jt can answer "which version of my resume gets screens?" with numbers | ≥ 30 applications with linked materials and outcomes | Later |
+| **L-2** | **Infer silent rejections.** Learn typical response time per ATS and company from your own history ("usually answers in 9 days; day 14 → likely closed"). *Ambitious:* check whether the job post is still up; a removed post means the role is filled → suggest close-out. | Close-out suggestions come with a probability and a reason | ≥ 50 applications with known outcomes | Later |
+| **L-3** | **Interview prep that writes itself.** When a screen or interview is recorded, generate a one-page brief: the role's real needs, the three matching stories, likely weak spots, five questions, posted salary range. | A brief exists before every scheduled call | L-1 (needs linked materials) | Later |
+| **L-4** | **Calendar and contacts.** Interviews from email become calendar events with prep blocks. Recruiters and hiring managers become contacts with history; a referral view shows who could refer you where. | No interview is entered by hand | After N-1 and N-2; calendar needs a new OAuth scope | Later |
+| **L-5** | **Your phone, not just your Mac.** ⚠ *Conflicts with §5 "no phone app, no cloud sync".* Read-only phone view of due, decisions and pipeline; one-tap approve or add. Keep local-first with an encrypted copy in your own iCloud folder. | Triage a decision from the phone | M6 says yes to native and the test week shows away-from-desk misses | Later |
+| **L-6** | **The whole search in one screen.** Weekly report: applications, response rate, screens, offers against last week; best and worst lanes and sources; days since last screen; next week's plan. *Ambitious:* a funnel chart across the whole search, also a portfolio piece. | A weekly report you actually read | L-1 has 4+ weeks of data | Later |
+| **L-7** | **Setup without Google Cloud** (this is v3's "no Google Cloud setup"). Options in order of effort: email forwarding to a local address; IMAP with an app password; a Google-verified app (restricted-scope security assessment, a real cost). Then `brew install jt` and a setup wizard. | Install to tracking in 5 minutes for someone who has never opened Terminal | v2 metrics hold with ~10 users | Later |
+
+**Recommended order:** N-1 first (it's the failure that just happened, and it's small), then L-1, which is what makes jt unique: no consumer tracker measures which version of your resume works.
+
 ## 11. Risks
 
 | Risk | Likelihood | Mitigation |
@@ -163,7 +193,8 @@ Engineering Now items are **done**: E1–E4, R9, R11–R18 (see §7). What remai
 | Live model behaves differently from tests (as the empty-request bug did) | Medium | A live replay on throwaway copies before trusting a new feature |
 | Production drifts behind `main` | Medium | E3 deploy script + version in the panel |
 | Scope creep (native, phone, launch) before v1 works | High | **This file's Now list is the only queue** |
-| OAuth Testing mode expires tokens weekly | Unknown | Now-4 |
+| OAuth Testing mode expires tokens weekly | **Happened** (Nov 6–12 and Nov 18–21) | Now-4; R20 makes recovery one command; N-1 makes it noticed |
+| Roadmap ambition pulls work ahead of v1 | High | §10.1 items carry a "start when" gate and only start once moved into Now |
 
 ## 12. Open decisions
 
@@ -173,3 +204,5 @@ Engineering Now items are **done**: E1–E4, R9, R11–R18 (see §7). What remai
 | Signed commits? | Unsigned is fine (not required by branch protection); keep it consistent | Now |
 | Enable repo auto-merge? | Optional; CI is already required | Any time |
 | Ignored-bucket sender list | Start from the ATS and assessment list in `sync.py`; tune from real misses | E2 |
+| Reopen D0.5 for zero-click capture (N-2)? | Yes, but only with test-week counts of candidate clicks and an undo window | After Now-2 |
+| Phone reach: Apple Reminders (§5) or a phone view (L-5)? | Reminders first; phone view only if misses happen away from the Mac | At M6 |
