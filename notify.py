@@ -33,6 +33,21 @@ SYNC_ALERTS = {
 OSASCRIPT_NOTIFY = ("on run argv\n"
                     "  display notification (item 2 of argv) with title (item 1 of argv)\n"
                     "end run")
+# iMessage to yourself (CEO review D3). Same rule: recipient and text are
+# arguments, never part of the script.
+OSASCRIPT_IMESSAGE = ("on run argv\n"
+                      "  tell application \"Messages\"\n"
+                      "    set svc to 1st account whose service type = iMessage\n"
+                      "    send (item 2 of argv) to participant (item 1 of argv) of svc\n"
+                      "  end tell\n"
+                      "end run")
+
+
+def phone_address() -> str | None:
+    """Your own iMessage phone number or Apple ID email, from JT_PHONE in
+    ~/.jobtrack/jt.env. Unset means alerts stay on the Mac."""
+    value = (os.environ.get("JT_PHONE") or "").strip()
+    return value if value and "\n" not in value else None
 
 
 def _notify_now(tz: ZoneInfo) -> datetime:
@@ -54,9 +69,14 @@ def notification_plan(conn, now: datetime) -> list[dict]:
         last = jt._fresh(conn, "gmail_synced_at")
         stale = last is None or now - jt._from_utc_iso(last) >= NOTIFY_SYNC_AFTER
         key = f"sync:{now.date().isoformat()}"
+        alert = {"title": "jt can't read your Gmail",
+                 "message": SYNC_ALERTS.get(err, SYNC_ALERTS["failed"])}
         if stale and key not in sent:
-            out.append({"key": key, "title": "jt can't read your Gmail",
-                        "message": SYNC_ALERTS.get(err, SYNC_ALERTS["failed"])})
+            out.append({"key": key, "channel": "mac", **alert})
+        # The outage alert is the one that must reach you away from the Mac.
+        # It names no company, so it's private as is.
+        if stale and phone_address() and f"phone:{key}" not in sent:
+            out.append({"key": f"phone:{key}", "channel": "phone", **alert})
 
     for x in jt.today_entries(conn, now.date(), now, tz)["actions"]:
         r = x["row"]
@@ -100,15 +120,13 @@ NOTIFY_TIMEOUT_SECONDS = 10
 # Consecutive `jt notify` runs in which nothing could be delivered before the
 # menu and `jt today` say alerts aren't reaching you (CEO review F2).
 ALERTS_FAILING_AFTER_RUNS = 3
-ALERTS_FAILING_HELP = ("Alerts aren't reaching you: check System Settings → Notifications "
-                       "→ Script Editor → Allow")
 
 
-def send_notification(title: str, message: str) -> str | None:
-    """Show one macOS notification. Returns None when osascript accepted it,
-    otherwise a short reason, so a blocked alert is never mistaken for a sent one."""
+def _run_osascript(script: str, *args: str) -> str | None:
+    """Run a fixed AppleScript with arguments. None means it succeeded;
+    otherwise a short reason, so a failed send is never mistaken for a sent one."""
     try:
-        proc = subprocess.run(["osascript", "-e", OSASCRIPT_NOTIFY, title, message],
+        proc = subprocess.run(["osascript", "-e", script, *args],
                               capture_output=True, text=True,
                               timeout=NOTIFY_TIMEOUT_SECONDS, check=False)
     except subprocess.TimeoutExpired:
@@ -123,27 +141,54 @@ def send_notification(title: str, message: str) -> str | None:
     return None
 
 
-def record_delivery(conn, delivered: list[dict], last_error: str | None) -> None:
-    """Record what reached the screen, in one transaction. A run where nothing
-    could be delivered counts toward the failing-alerts warning; any delivery
-    resets it."""
+def send_notification(title: str, message: str) -> str | None:
+    """Show one macOS notification banner."""
+    return _run_osascript(OSASCRIPT_NOTIFY, title, message)
+
+
+def send_imessage(to: str, text: str) -> str | None:
+    """Send one iMessage from this Mac's Messages account."""
+    return _run_osascript(OSASCRIPT_IMESSAGE, to, text)
+
+
+CHANNELS = ("mac", "phone")
+ALERTS_FAILING_HELP = {
+    "mac": ("Alerts aren't reaching you: check System Settings → Notifications "
+            "→ Script Editor → Allow"),
+    "phone": ("Phone alerts aren't reaching you: check that Messages is signed in, and "
+              "allow controlling Messages in System Settings → Privacy & Security → Automation"),
+}
+
+
+def record_delivery(conn, delivered: list[dict], errors: dict[str, str]) -> None:
+    """Record what was delivered, in one transaction, and track each channel's
+    health on its own: a run where a channel delivered nothing and failed
+    counts toward its warning; any delivery on that channel resets it."""
+    worked = {n.get("channel", "mac") for n in delivered}
     with jt.write_txn(conn):
         _record_notified_in_txn(conn, delivered, jt._utc_iso(datetime.now(timezone.utc)))
-        if delivered:
-            conn.execute("DELETE FROM sync_state WHERE key IN "
-                         "('notify_failed_runs', 'notify_last_error')")
-        elif last_error:
-            runs = int(jt._fresh(conn, "notify_failed_runs") or 0) + 1
-            conn.executemany("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)",
-                             [("notify_failed_runs", str(runs)),
-                              ("notify_last_error", last_error)])
+        for channel in CHANNELS:
+            runs_key, error_key = f"notify_failed_runs:{channel}", f"notify_last_error:{channel}"
+            if channel in worked:
+                conn.execute("DELETE FROM sync_state WHERE key IN (?, ?)", (runs_key, error_key))
+            elif channel in errors:
+                runs = int(jt._fresh(conn, runs_key) or 0) + 1
+                conn.executemany("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)",
+                                 [(runs_key, str(runs)), (error_key, errors[channel])])
 
 
 def alerts_failing(conn) -> dict | None:
-    runs = int(jt._fresh(conn, "notify_failed_runs") or 0)
-    if runs < ALERTS_FAILING_AFTER_RUNS:
-        return None
-    return {"failed_runs": runs, "last_error": jt._fresh(conn, "notify_last_error")}
+    """The first channel that has delivered nothing for 3 runs in a row."""
+    for channel in CHANNELS:
+        runs = int(jt._fresh(conn, f"notify_failed_runs:{channel}") or 0)
+        if runs >= ALERTS_FAILING_AFTER_RUNS:
+            return {"channel": channel, "failed_runs": runs,
+                    "last_error": jt._fresh(conn, f"notify_last_error:{channel}")}
+    return None
+
+
+def alerts_failing_help(failing: dict) -> str:
+    return ALERTS_FAILING_HELP.get(failing.get("channel", "mac"), ALERTS_FAILING_HELP["mac"])
 
 
 def cmd_notify(conn, a):
@@ -161,16 +206,26 @@ def cmd_notify(conn, a):
     if os.environ.get("JT_NOTIFY") == "0":
         print("notifications are off (JT_NOTIFY=0)")
         return
-    delivered, errors = [], []
+    delivered: list[dict] = []
+    errors: dict[str, str] = {}
+    failed = 0
     for n in items:
-        error = send_notification(n["title"], n["message"])
+        channel = n.get("channel", "mac")
+        if channel == "phone":
+            to = phone_address()
+            error = (send_imessage(to, f"{n['title']}: {n['message']}") if to
+                     else "JT_PHONE is not set")
+        else:
+            error = send_notification(n["title"], n["message"])
         if error is None:
             delivered.append(n)
         else:
-            errors.append(error)
-    record_delivery(conn, delivered, errors[-1] if errors else None)
+            errors[channel] = error
+            failed += 1
+    record_delivery(conn, delivered, errors)
     print(f"sent {len(delivered)} notification(s)")
     if errors:
-        print(f"error: {len(errors)} notification(s) not delivered ({errors[-1]}); "
+        detail = "; ".join(f"{c}: {e}" for c, e in errors.items())
+        print(f"error: {failed} notification(s) not delivered ({detail}); "
               "they will be retried on the next run", file=sys.stderr)
         sys.exit(1)

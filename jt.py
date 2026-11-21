@@ -1420,7 +1420,7 @@ def cmd_today(conn, a):
     failing = _alerts_failing(conn)
     if failing:
         import notify  # imported lazily: notify imports jt
-        print(f"  !! {notify.ALERTS_FAILING_HELP}\n     last error: {failing['last_error']}")
+        print(f"  !! {notify.alerts_failing_help(failing)}\n     last error: {failing['last_error']}")
     print(review_banner(conn))
 
 

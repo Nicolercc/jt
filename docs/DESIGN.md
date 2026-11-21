@@ -191,7 +191,7 @@ Rules:
 - An application with any open or snoozed action produces no suggestion (D1 suppression rule).
 - Adding fields is fine in v1. Renaming or removing a field, or changing a type, bumps `schema_version`.
 - `sync_error` is one of `null`, `"offline"`, `"auth_expired"`, `"failed"`. The UI shows it in words, not only color.
-- `alerts_failing` is `null`, or `{"failed_runs": n, "last_error": "..."}` once 3 `jt notify` runs in a row delivered nothing (added 2026-11-21, CEO review F2). The UI shows it in words and with ⚠.
+- `alerts_failing` is `null`, or `{"channel": "mac" | "phone", "failed_runs": n, "last_error": "..."}` once 3 `jt notify` runs in a row delivered nothing on that channel (added 2026-11-21, CEO review F2; `channel` added with T2). The UI shows it in words, naming the fix for that channel, and with ⚠.
 - Write paths for the UI go through commands, not the JSON: `jt action done <id>`, `jt action snooze <id> --until ...`, `jt review approve|reject <id>`. Each must accept `--json` and exit non-zero on failure.
 - Contract tests use fixed fixtures for six states: healthy, empty, offline, auth expired, ambiguous match, overdue.
 

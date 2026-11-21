@@ -21,6 +21,7 @@ def conn(tmp_path, monkeypatch):
     monkeypatch.setenv("JT_LOG_DIR", str(tmp_path / "logs"))
     monkeypatch.delenv("JT_NOTIFY", raising=False)
     monkeypatch.delenv("JT_NOTIFY_PRIVATE", raising=False)
+    monkeypatch.delenv("JT_PHONE", raising=False)
     c = jt.connect()
     with jt.write_txn(c):
         c.execute("INSERT INTO applications (id, company, role, lane, applied_on) "
@@ -243,7 +244,7 @@ def test_three_failed_runs_raise_a_visible_warning(conn, monkeypatch, capsys):
         with pytest.raises(SystemExit):
             jt.main_args(["notify"])
     warn = notify.alerts_failing(conn)
-    assert warn == {"failed_runs": 3,
+    assert warn == {"channel": "mac", "failed_runs": 3,
                     "last_error": "osascript exited 1: Not authorized to send Apple events"}
     snap = jt.today_snapshot(conn, NOW.date(), NOW, NY)
     assert snap["freshness"]["alerts_failing"] == warn
@@ -282,3 +283,88 @@ def test_partial_delivery_records_only_what_was_sent(conn, monkeypatch):
         jt.main_args(["notify"])
     assert sent == ["Due today: Complete Northstar assessment"]
     assert [n["title"] for n in plan(conn)] == ["Overdue: Send availability"]
+
+
+# ---------------------------------------------------------------- phone (T2)
+# CEO review B1/D3: an outage alert must reach the phone, not only a Mac
+# banner nobody is looking at. iMessage to yourself; JT_PHONE is your own
+# iMessage address and lives only in ~/.jobtrack/jt.env.
+
+ME = "+15555550123"
+INJECTION = 'x" & (do shell script "say pwned") & "'
+
+
+def _gmail_down(conn, tmp_path):
+    sync_failed(tmp_path)
+    jt.mark_fresh(conn, "gmail_synced_at", NOW - timedelta(hours=5))
+
+
+def test_no_phone_configured_means_mac_only(conn, tmp_path):
+    _gmail_down(conn, tmp_path)
+    assert [n.get("channel", "mac") for n in plan(conn)] == ["mac"]
+
+
+def test_gmail_outage_also_goes_to_the_phone(conn, tmp_path, monkeypatch):
+    monkeypatch.setenv("JT_PHONE", ME)
+    _gmail_down(conn, tmp_path)
+    mac, phone = plan(conn)
+    assert phone["channel"] == "phone" and phone["key"] == "phone:" + mac["key"]
+    assert (phone["title"], phone["message"]) == (mac["title"], mac["message"])
+
+
+def test_tasks_and_new_applications_stay_off_the_phone(conn, tmp_path, monkeypatch):
+    """Phone alerts for tasks are E3, chosen after the test week; T2 sends outages only."""
+    monkeypatch.setenv("JT_PHONE", ME)
+    _due_task(conn)
+    jt.insert_application_candidate(conn, raw_input="x", source="email", source_ref="m1",
+                                    company="Harbor Bank", role="Analyst")
+    assert plan(conn) and all(n.get("channel", "mac") == "mac" for n in plan(conn))
+
+
+def test_imessage_text_is_passed_as_arguments_not_code(monkeypatch):
+    calls = []
+    monkeypatch.setattr(notify.subprocess, "run", lambda args, **k: calls.append(args) or _Proc(0))
+    assert notify.send_imessage(ME, INJECTION) is None
+    args = calls[0]
+    assert args[:2] == ["osascript", "-e"]
+    assert "do shell script" not in args[2] and 'application "Messages"' in args[2]
+    assert args[-2:] == [ME, INJECTION]
+
+
+def test_imessage_failure_is_reported(monkeypatch):
+    monkeypatch.setattr(notify.subprocess, "run",
+                        lambda args, **k: _Proc(1, "Messages got an error: Can't get account 1 (-1728)\n"))
+    assert notify.send_imessage(ME, "hi") == (
+        "osascript exited 1: Messages got an error: Can't get account 1 (-1728)")
+
+
+def test_notify_sends_each_channel_its_own_way(conn, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("JT_PHONE", ME)
+    _gmail_down(conn, tmp_path)
+    mac, texts = [], []
+    monkeypatch.setattr(notify, "send_notification", lambda t, m: mac.append(t))
+    monkeypatch.setattr(notify, "send_imessage", lambda to, text: texts.append((to, text)))
+    monkeypatch.setattr(notify, "_notify_now", lambda tz: NOW)
+    jt.main_args(["notify"])
+    assert mac == ["jt can't read your Gmail"]
+    [(to, text)] = texts
+    assert to == ME and text.startswith("jt can't read your Gmail: ")
+    assert plan(conn) == []
+
+
+def test_phone_failure_is_retried_and_tracked_separately(conn, tmp_path, monkeypatch, capsys):
+    """A working Mac banner must not hide a dead phone channel."""
+    monkeypatch.setenv("JT_PHONE", ME)
+    _gmail_down(conn, tmp_path)
+    monkeypatch.setattr(notify, "send_notification", lambda t, m: None)
+    monkeypatch.setattr(notify, "send_imessage", lambda to, text: "osascript exited 1: not signed in")
+    for day in range(3):
+        now = NOW + timedelta(days=day)        # each day the outage alert is due again
+        monkeypatch.setattr(notify, "_notify_now", lambda tz, now=now: now)
+        with pytest.raises(SystemExit):
+            jt.main_args(["notify"])
+        assert [n["channel"] for n in notify.notification_plan(conn, now)] == ["phone"]
+    failing = notify.alerts_failing(conn)
+    assert failing == {"channel": "phone", "failed_runs": 3,
+                       "last_error": "osascript exited 1: not signed in"}
+    assert "Messages" in notify.alerts_failing_help(failing)
