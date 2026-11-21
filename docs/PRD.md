@@ -1,6 +1,6 @@
 # jt — product requirements
 
-**Owner:** Nicole Rodriguez · **Last updated:** 2026-11-21 (after #55; roadmap §10.1 added) · **Status:** v1 (for me) in progress
+**Owner:** Nicole Rodriguez · **Last updated:** 2026-11-21 (CEO review: §10.2, Now-7, Now-8) · **Status:** v1 (for me) in progress
 **This is the plan.** Work that isn't in the **Now** list below doesn't start, for Claude, Codex or anyone else, until this file changes.
 How it works: [ARCHITECTURE.md](ARCHITECTURE.md). Why decisions were made: [DESIGN.md](DESIGN.md).
 
@@ -130,7 +130,7 @@ Native star app (Finder launch, notifications), Apple Reminders for phone reach,
 
 ### NOW (this week). Exit: the test week running, labels at least 50% done, OAuth in production.
 
-Engineering Now items are **done**: E1–E4, R9, R11–R18 (see §7). What remains is evidence only you can produce.
+Engineering Now items E1–E4, R9, R11–R18 are **done** (see §7). The 2026-11-21 CEO review added two engineering milestones, Now-7 and Now-8, which run alongside the test week so it measures a reliable jt that sees every application. Plan of record: [§10.2](#102-ceo-review-2026-11-21-integration-first).
 
 | # | Owner | Task | Done when |
 |---|---|---|---|
@@ -140,8 +140,11 @@ Engineering Now items are **done**: E1–E4, R9, R11–R18 (see §7). What remai
 | **Now-4** | Nicole | **Overdue (it expired Nov 18):** switch Google OAuth from Testing to In production (free), then sign in once more so the token is a production one | Audience page says "In production"; no `⚠` after Nov 28 |
 | **Now-5** | Nicole | Confirm notifications reach you (System Settings → Notifications → Script Editor → Allow) and keep the Mac plugged in | A test notification is seen |
 | **Now-6** | Nicole | Approve removing leftover local copies and the running demo app | ≤ 1 dev copy + production |
+| **Now-7** | Engineering | **Milestone R, reliability** (T1–T4 in §10.2): alerts that can't fail silently, iMessage sync-down alert, external watchdog on real health (sync + backlog + failures), Sign in again from the menu | An outage is reported to the phone within 3 hours even if the Mac is off |
+| **Now-8** | Engineering + job-search | **Milestone C, complete capture** (T5–T10): versioned inbox contract from job-search, content-addressed materials that are backed up, exact application identity for both arrival orders, backfill | jt's application count equals job-search's "applied" count |
 
 ### NEXT (after the test week). Exit: an M6 decision recorded with evidence.
+- **Choose the next build from measured misses**, not a schedule: job-post liveness (E2), phone alerts for tasks/interviews/deadlines (E3), interview briefs (E4), weekly report (B4), or classifier work. See §10.2.
 - Run the baseline: `python3 -m evals.run --set holdout --policy compare` and record it in DESIGN.md §10.
 - R10 `jt explain`, splitting `jt.py`: chosen by what the test week shows hurts most.
 - **M6 decision rule:**
@@ -182,7 +185,53 @@ The gap between the first and second rows is the roadmap: the engine is done; th
 | **L-6** | **The whole search in one screen.** Weekly report: applications, response rate, screens, offers against last week; best and worst lanes and sources; days since last screen; next week's plan. *Ambitious:* a funnel chart across the whole search, also a portfolio piece. | A weekly report you actually read | L-1 has 4+ weeks of data | Later |
 | **L-7** | **Setup without Google Cloud** (this is v3's "no Google Cloud setup"). Options in order of effort: email forwarding to a local address; IMAP with an app password; a Google-verified app (restricted-scope security assessment, a real cost). Then `brew install jt` and a setup wizard. | Install to tracking in 5 minutes for someone who has never opened Terminal | v2 metrics hold with ~10 users | Later |
 
-**Recommended order:** N-1 first (it's the failure that just happened, and it's small), then L-1, which is what makes jt unique: no consumer tracker measures which version of your resume works.
+**Status after the CEO review (§10.2):** N-1 → Now-7. N-2 is **superseded** without reopening D0.5: applications now arrive from job-search through the inbox, created by your action, not the classifier. L-1 → Now-8 as provenance only ("which resume works" claims wait for comparison groups). The liveness half of L-2 and all of L-3 are post-test-week candidates. L-4 to L-7 unchanged.
+
+### 10.2 CEO review 2026-11-21: integration-first
+
+Review mode: selective expansion, with an independent outside review (Codex). Full plan, findings and review report: `~/.gstack/projects/Nicolercc-jt/ceo-plans/2026-11-21-integration-first-roadmap.md` (local).
+
+**Evidence that set the direction.** jt held 15 applications (8 Aug, 6 Sep, 0 Oct, 1 Nov). On 2026-11-20 the job-search app produced 5 applications and jt learned of 1, through a confirmation email. Gmail sync was silently down ~70 hours (Nov 18–21) although the Mac alert fired daily.
+
+**Two apps.** *job-search* (finds roles, tailors materials) and *jt* (tracks what happens after) are separate products in separate repos. They connect through one versioned contract, the inbox; neither reads the other's internal files.
+
+```
+ job-search ──writes .tmp → rename──► ~/.jobtrack/inbox/applied-<external_id>.json
+                                            │
+ jt ingest: verify hashes → copy materials → DB transaction → move to processed/ (or failed/<reason> + alert)
+            materials: ~/.jobtrack/materials/<sha256>.<ext>, included in backups
+ Gmail → classify → mail matches an application by company AND role → event; otherwise review or candidate
+```
+
+**Key decisions**
+
+| # | Decision |
+|---|---|
+| Alerts | iMessage to yourself; a failed send is never recorded as sent; external watchdog (healthchecks.io ping, no data) only when sync is ok, unclassified mail is < 2 h old, and nothing failed |
+| Contract | Drop-folder inbox, JSON Schema v1 in `docs/contracts/`; atomic writes; replay-safe; same `external_id` with a different payload is a conflict, not a no-op |
+| Identity | `external_id` is identity; ingest absorbs a matching pending candidate; mail to a company with ingested apps must match the role, else review; exact normalized company names (no substring matches) |
+| Materials | Copied and content-addressed at ingest; backed up and verified |
+| Resume variants | Stored as provenance (`variant_id`, lead-bullet tags); comparisons only with ≥ 5 applications per variant and a 21-day window |
+| Liveness (candidate) | Public ATS APIs first; "role likely filled" only if the post is gone AND 10+ quiet business days AND stage is still applied/confirmed |
+| Briefs (candidate) | On by default with `JT_BRIEFS=0`; post text treated as data; no tools; contact details stripped |
+| Code size | The line cap is retired (see README §Scope): each PR states what it adds and what it cut; new features in their own modules; `jt.py` may only shrink |
+
+**Build tasks, one PR each, in order**
+
+| # | PR | Done when |
+|---|---|---|
+| T1 | Notification delivery: check the result; failed sends not recorded; warning after 3 | Tests for success, failure, 3-failure warning |
+| T2 | iMessage channel (`JT_PHONE`), argv-safe, private by default | A sync-down alert reaches the phone |
+| T3 | Health + external watchdog | Each unhealthy reason tested; the watchdog fires with the Mac off |
+| T4 | "Sign in again" in the menu | An expired sign-in is fixed from the menu |
+| T5 | Contract v1 JSON Schema + docs | An example event validates |
+| T6 | Schema 9: `external_id` UNIQUE, materials store | Additive migration tested on a copy of the live DB |
+| T7 | Ingest: atomic, replay-safe, conflicts, failed/ reasons, security checks | Crash test at each step |
+| T8 | Application identity: role-aware matching, candidate absorption | Email-first, ingest-first, two-role and manual-app tests |
+| T9 | Materials in backup + verify | verify-backup fails on a missing or altered file |
+| T10 | *(job-search repo)* emitter + one-time backfill | jt's count = job-search's applied count |
+
+**Not in scope:** auto-adding from email (N-2 as written), phone app and cloud sync (L-5), setup for other people (L-7), calendar and contacts (L-4).
 
 ## 11. Risks
 
