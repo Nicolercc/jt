@@ -146,6 +146,39 @@ def test_revoked_token_unattended_fails_with_an_auth_message(google, monkeypatch
     assert google.token.read_text() == "old"     # nothing overwritten on failure
 
 
+def test_revoked_token_interactive_signs_in_again_and_saves_the_new_token(google):
+    """Running jt-sync in Terminal after the token dies must recover on its own,
+    without moving token.json aside by hand (the Nov 21 manual workaround)."""
+    google.token.write_text("old")
+    google.stored = FakeCreds(valid=False, expired=True,
+                              refresh_error=RefreshError("invalid_grant: Token has been expired or revoked."))
+    assert sync.build_gmail_service() == "service"
+    assert google.browser_opened
+    assert google.built_with.label == "fresh"
+    assert json.loads(google.token.read_text())["token"] == "fresh"
+    assert mode(google.token) == 0o600
+
+
+def test_revoked_token_interactive_keeps_the_old_token_if_sign_in_times_out(google):
+    google.token.write_text("old")
+    google.stored = FakeCreds(valid=False, expired=True,
+                              refresh_error=RefreshError("invalid_grant: Token has been expired or revoked."))
+    google.browser = WSGITimeout("timed out")
+    with pytest.raises(SystemExit, match="timed out"):
+        sync.build_gmail_service()
+    assert google.token.read_text() == "old"     # never deleted before a new one is saved
+
+
+def test_revoked_token_in_audit_mode_fails_without_a_browser(google):
+    google.token.write_text("old")
+    google.stored = FakeCreds(valid=False, expired=True,
+                              refresh_error=RefreshError("invalid_grant: Token has been expired or revoked."))
+    with pytest.raises(SystemExit, match="invalid_grant"):
+        sync.build_gmail_service(persist_credentials=False)
+    assert not google.browser_opened
+    assert google.token.read_text() == "old"
+
+
 def test_other_refresh_errors_are_not_mislabelled_as_auth(google):
     google.token.write_text("old")
     google.stored = FakeCreds(valid=False, expired=True, refresh_error=RefreshError("connection reset"))
